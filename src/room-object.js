@@ -6,7 +6,7 @@ import { recordRoomEvent } from './analytics/record.js';
 const SAVE_DELAY_MS = 1_000;
 const HEARTBEAT_MS = 5 * 60_000; // keeps the lobby's listing fresh; also cleans up rooms nobody joined
 // Messages a connection may send per window before the rest are dropped.
-const RATE_LIMITS = { draw: [240, 1_000], chat: [8, 5_000], other: [40, 5_000] };
+const RATE_LIMITS = { draw: [240, 1_000], chat: [8, 5_000], rtc: [400, 10_000], other: [40, 5_000] };
 
 /**
  * One Durable Object per room code. It owns the room's WebSocket connections and wires them
@@ -109,6 +109,12 @@ export class RoomObject extends DurableObject {
         break;
       case 'ready':
         room.markReady(player);
+        break;
+      case 'voice':
+        room.setVoice(player, msg.d ?? {});
+        break;
+      case 'rtc':
+        room.relaySignal(player, msg.d?.to, msg.d?.signal);
         break;
     }
   }

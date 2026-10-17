@@ -18,6 +18,8 @@ const QUERIES = {
   games: `SELECT COUNT(*) AS started, COALESCE(SUM(completed), 0) AS completed,
     AVG(CASE WHEN completed = 1 THEN ended_at - started_at END) AS avgMs, AVG(players) AS avgPlayers
     FROM games WHERE started_at >= ?1`,
+  voice: `SELECT COUNT(*) AS sessions, COUNT(DISTINCT COALESCE(visitor, name)) AS players, COUNT(DISTINCT room) AS rooms
+    FROM voice WHERE ts >= ?1`,
   turns: `SELECT COUNT(*) AS turns, COALESCE(SUM(correct), 0) AS correct, COALESCE(SUM(guessers), 0) AS guessers,
     AVG(duration_ms) AS avgMs FROM turns WHERE ts >= ?1`,
   dailyVisits: `SELECT date(ts / 1000, 'unixepoch') AS day, COUNT(DISTINCT visitor) AS visitors, COUNT(*) AS visits
@@ -63,6 +65,7 @@ export async function buildReport(db, since) {
       ...one('rooms'),
       games: one('games'),
       turns: one('turns'),
+      voice: one('voice'),
     },
     daily: mergeDays(rows.dailyVisits, rows.dailyPlayers, rows.dailyGames),
     countries: mergeCountries(rows.countries, rows.playerCountries),

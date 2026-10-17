@@ -3,5 +3,6 @@
 DELETE FROM turns WHERE game IN (SELECT id FROM games WHERE room IN (SELECT room FROM joins WHERE visitor LIKE 'e2e-%'));
 DELETE FROM games WHERE room IN (SELECT room FROM joins WHERE visitor LIKE 'e2e-%');
 DELETE FROM rooms WHERE visitor LIKE 'e2e-%' OR code IN (SELECT room FROM joins WHERE visitor LIKE 'e2e-%');
+DELETE FROM voice WHERE visitor LIKE 'e2e-%';
 DELETE FROM joins WHERE visitor LIKE 'e2e-%';
 DELETE FROM visits WHERE visitor LIKE 'e2e-%';

@@ -1,6 +1,7 @@
 import { Board } from './board.js';
 import { getLang, setLang, t } from './i18n.js';
 import { RoomConnection, api } from './net.js';
+import { VoiceChat } from './voice.js';
 
 const AVATARS = ['🐱', '🐶', '🦊', '🐼', '🐨', '🐯', '🦁', '🐸', '🐵', '🐰', '🐻', '🐷', '🐮', '🐔', '🐧', '🦉', '🐙', '🦄', '🐲', '🐢', '🐝', '🦋', '🐳', '🐪'];
 const COLORS = [
@@ -97,6 +98,7 @@ const pendingText = new Map(); // lobby text field → timer for its not-yet-sen
 
 const send = (type, data) => conn?.send(type, data);
 const board = new Board($('#board'), op => send('draw', op));
+const voice = new VoiceChat({ send, onChange: () => room && renderVoice() });
 
 const secondsLeft = () => (deadline ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) : 0);
 const me = () => room.players.find(p => p.id === room.me.id);
@@ -111,6 +113,7 @@ const handlers = {
   chat: m => addChat(m),
   draw: op => board.apply(op),
   'draw:history': ops => Array.isArray(ops) && board.load(ops),
+  rtc: ({ from, signal } = {}) => voice.handleSignal(from, signal),
 };
 
 // ---------------------------------------------------------------- home screen
@@ -300,6 +303,7 @@ function onState(state) {
   room = state;
   deadline = state.timeLeft ? Date.now() + state.timeLeft : 0;
   if (opening) openRoom();
+  voice.sync(state.players, state.me.id, state.voiceAllowed);
   render();
 }
 
@@ -316,6 +320,7 @@ function openRoom() {
 }
 
 function closeRoom(errorKey) {
+  voice.leave({ notify: false });
   if (room) send('leave');
   conn?.close();
   conn = null;
@@ -372,8 +377,9 @@ function render() {
   renderToolbar(drawer, amDrawer);
   renderOverlay(drawer, amDrawer);
   fitBoard();
+  renderVoice();
   const guessing = room.state === 'drawing' && !amDrawer && !me()?.guessed;
-  $('#chatInput').placeholder = guessing ? t('guessPh') : t('chatPh');
+  setPlaceholder($('#chatInput'), guessing ? t('guessPh') : t('chatPh'));
   onTransition(amDrawer);
   prevState = room.state;
   tick();
@@ -449,13 +455,14 @@ function renderPlayers() {
     if (p.guessed) classes.push('guessed');
     if (playing && p.id === room.drawerId) classes.push('drawing');
     if (p.id === room.me.id) classes.push('me');
-    return h('li', { class: classes.join(' ') },
+    return h('li', { class: classes.join(' '), 'data-id': p.id },
       h('span', { class: 'rank' }, `#${i + 1}`),
       h('span', { class: 'avatar' }, AVATARS[p.avatar] ?? '🙂'),
       h('span', { class: 'pinfo' },
         h('bdi', { class: 'pname' }, p.name),
         h('span', { class: 'pscore' }, `${p.score} ${t('pts')}`, p.id === room.me.id ? ` · ${t('you')}` : '')),
       h('span', { class: 'badges' },
+        p.voice ? voiceBadge(p) : null,
         p.id === room.hostId ? h('span', { title: t('host') }, '👑') : null,
         playing && p.id === room.drawerId ? h('span', {}, '✏️') : null,
         host && p.id !== room.me.id
@@ -467,6 +474,55 @@ function renderPlayers() {
           }, '✕')
           : null));
   }));
+}
+
+// 🎙️ in voice · 🔇 muted their own mic · 🔕 muted on this device. Other players' badges toggle "mute for me".
+function voiceBadge(p) {
+  const badge = p.id === room.me.id
+    ? h('span', { class: 'voice-badge' })
+    : h('button', { class: 'voice-badge', onclick: () => voice.toggleBlocked(p.id) });
+  paintVoiceBadge(badge, p);
+  return badge;
+}
+
+function paintVoiceBadge(badge, p) {
+  const blocked = voice.blocked.has(p.id);
+  const label = blocked ? t('voiceUnmuteForMe') : p.muted ? t('voiceMutedSelf') : t('voiceOn');
+  badge.textContent = blocked ? '🔕' : p.muted ? '🔇' : '🎙️';
+  badge.title = blocked || p.id === room.me.id ? label : `${label} · ${t('voiceMuteForMe')}`;
+  badge.setAttribute('aria-label', p.id === room.me.id ? label : blocked ? t('voiceUnmuteForMe') : t('voiceMuteForMe'));
+  if (badge.tagName === 'BUTTON') badge.setAttribute('aria-pressed', String(blocked));
+}
+
+// Voice buttons and the speaking glow; runs on every room update and whenever someone starts/stops talking.
+function renderVoice() {
+  const allowed = room.voiceAllowed;
+  $('#voiceBtn').hidden = !allowed || voice.active;
+  $('#micBtn').hidden = !voice.active;
+  $('#hangupBtn').hidden = !voice.active;
+  if (voice.active) {
+    $('#micBtn').replaceChildren(voice.muted ? '🔇 ' : '🎙️ ', h('span', {}, voice.muted ? t('unmute') : t('mute')));
+    $('#micBtn').setAttribute('aria-pressed', String(voice.muted));
+    $('#micBtn').classList.toggle('muted', voice.muted);
+  }
+  for (const li of $('#playerList').children) {
+    const p = room.players.find(x => x.id === li.dataset.id);
+    li.classList.toggle('speaking', voice.speaking.has(li.dataset.id));
+    li.dataset.voice = voice.connectionOf(li.dataset.id) ?? '';
+    const badge = li.querySelector('.voice-badge');
+    if (badge && p) paintVoiceBadge(badge, p);
+  }
+}
+
+async function joinVoice() {
+  $('#voiceBtn').disabled = true;
+  try {
+    await voice.join(room.me.id);
+  } catch (err) {
+    toast(t(err?.name === 'NotAllowedError' ? 'micDenied' : 'micError'));
+  } finally {
+    $('#voiceBtn').disabled = false;
+  }
 }
 
 function renderToolbar(drawer, amDrawer) {
@@ -500,11 +556,11 @@ function renderLobby() {
   const s = room.settings;
   const sync = (sel, value) => {
     const el = $(sel);
-    if (document.activeElement !== el) el.value = String(value);
-    el.disabled = !host;
+    if (document.activeElement !== el && el.value !== String(value)) el.value = String(value);
+    if (el.disabled === host) el.disabled = !host;
   };
   if (!pendingText.has('#setName')) sync('#setName', s.name);
-  $('#setName').placeholder = roomDisplayName('', room.players.find(p => p.id === room.hostId)?.name);
+  setPlaceholder($('#setName'), roomDisplayName('', room.players.find(p => p.id === room.hostId)?.name));
   sync('#setLang', s.lang);
   sync('#setRounds', s.rounds);
   sync('#setTime', s.drawTime);
@@ -688,13 +744,35 @@ function syncTools() {
 // ---------------------------------------------------------------- chat
 
 function initChat() {
-  $('#chatForm').onsubmit = e => {
-    e.preventDefault();
-    const input = $('#chatInput');
+  const input = $('#chatInput');
+  // Phone keyboards build each word in a "composition"; touching the field before the word is
+  // finished makes letters vanish or reappear. So Enter waits for the composition to end.
+  let composing = false;
+  let sendWhenDone = false;
+  const submit = () => {
     const text = input.value.trim();
     if (text) send('chat', text);
     input.value = '';
   };
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => {
+    composing = false;
+    if (sendWhenDone) {
+      sendWhenDone = false;
+      setTimeout(submit);
+    }
+  });
+  $('#chatForm').onsubmit = e => {
+    e.preventDefault();
+    if (composing) sendWhenDone = true;
+    else submit();
+  };
+}
+
+// Only touch a text field's attributes when they really change: rewriting them while someone is
+// typing can reset the phone keyboard mid-word.
+function setPlaceholder(el, text) {
+  if (el.placeholder !== text) el.placeholder = text;
 }
 
 // System lines remember their message so they can be re-translated when the UI language changes.
@@ -709,7 +787,10 @@ function retranslateChat() {
 
 function addChat(m) {
   const box = $('#messages');
-  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  // On phones the newest message sits at the top, right under the guess box (column-reverse),
+  // and the browser keeps it in view by itself.
+  const newestFirst = getComputedStyle(box).flexDirection === 'column-reverse';
+  const atBottom = !newestFirst && box.scrollHeight - box.scrollTop - box.clientHeight < 60;
   let line;
   if (m.type === 'msg' || m.type === 'secret') {
     line = h('div', { class: `msg ${m.type}` }, h('bdi', { class: 'who' }, m.name), ': ', h('bdi', {}, m.text));
@@ -787,6 +868,9 @@ initToolbar();
 initChat();
 $('#leaveBtn').onclick = () => closeRoom();
 $('#inviteBtn').onclick = shareInvite;
+$('#voiceBtn').onclick = joinVoice;
+$('#micBtn').onclick = () => voice.setMuted(!voice.muted);
+$('#hangupBtn').onclick = () => voice.leave();
 $('#muteBtn').onclick = () => {
   muted = !muted;
   store.set('muted', muted);

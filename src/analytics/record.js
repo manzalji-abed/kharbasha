@@ -70,6 +70,12 @@ export function recordRoomEvent(db, room, event, data) {
         now, data.gameId, short(data.wordEn, 30), short(data.wordAr, 30), data.custom ? 1 : 0, short(data.drawer, 20),
         data.guessers, data.correct, data.durationMs, data.reason,
       );
+    case 'voice_joined':
+      return run(
+        db,
+        'INSERT INTO voice (ts, room, visitor, name) VALUES (?, ?, ?, ?)',
+        now, room, visitorOf(data.visitor), short(data.name, 20),
+      );
     case 'game_ended':
       return run(
         db,

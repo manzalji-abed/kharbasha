@@ -367,6 +367,22 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
 .pname { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pscore { font-size: .85rem; font-weight: 600; color: var(--ink-soft); }
 .badges { display: flex; align-items: center; gap: 2px; font-size: 1.05rem; }
+.voice-badge {
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  font-size: 1rem;
+  line-height: 28px;
+  text-align: center;
+}
+button.voice-badge:hover { background: rgb(29 20 66 / .08); }
+/* the speaking glow: a green ring around the avatar of whoever is talking */
+.player .avatar { border-radius: 50%; transition: box-shadow .15s; }
+.player.speaking .avatar { box-shadow: 0 0 0 3px var(--green), 0 0 12px 2px rgb(22 163 74 / .55); }
+#micBtn.muted { background: var(--close-bg); }
 .kick {
   width: 28px;
   height: 28px;
@@ -402,8 +418,9 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
   box-shadow: var(--shadow);
   overflow: hidden;
 }
-#board { display: block; width: 100%; height: 100%; touch-action: none; }
-#board.can-draw { cursor: crosshair; }
+/* Swipes over the picture scroll the page, except for the drawer, whose finger draws. */
+#board { display: block; width: 100%; height: 100%; touch-action: pan-x pan-y pinch-zoom; }
+#board.can-draw { cursor: crosshair; touch-action: none; }
 #board.can-draw[data-tool="fill"] { cursor: cell; }
 
 /* lobby & game over use the whole stage instead of sitting on the canvas */
@@ -631,7 +648,7 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
     padding: 0 8px 12px;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto;
-    grid-template-areas: "bar" "stage" "players" "chat";
+    grid-template-areas: "bar" "stage" "chat" "players";
   }
   .roombar { flex-wrap: wrap; gap: 6px 10px; min-height: 0; padding: 6px 10px; }
   .timer { width: 44px; height: 44px; font-size: 1.1rem; }
@@ -639,6 +656,8 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
   .word-area { order: 3; flex-basis: 100%; }
   .mask { gap: 4px; font-size: 1.3rem; }
   .word-full { font-size: 1.3rem; }
+  .room-actions { gap: 6px; }
+  .room-actions .btn { min-width: 42px; padding: 2px 8px; }
   .room-actions .btn span { display: none; }
 
   .stage { --fit: 0; }
@@ -665,7 +684,11 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
   .player { flex: none; max-width: 180px; padding: 4px 8px; gap: 6px; }
   .player .rank { display: none; }
   .player .avatar { font-size: 1.5rem; }
-  .chat { height: 340px; }
+  /* The guess box sits right under the drawing, so the picture stays in view while typing;
+     the newest messages appear just below it, and the page scrolls freely past the chat. */
+  .chat { height: 300px; flex-direction: column-reverse; }
+  .chat-form { border-top: 0; border-bottom: 3px solid var(--line); }
+  .messages { flex-direction: column-reverse; overscroll-behavior: auto; }
 }
 
 @media (max-width: 420px) {
