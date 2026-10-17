@@ -1,9 +1,8 @@
-import { randomBytes, randomInt } from 'node:crypto';
-import { pickEntries, parseCustomWords } from './words.js';
+import { LANGS, pickEntries, parseCustomWords } from './words.js';
 import { answerKeys, cleanText, isClose, toKey } from './normalize.js';
+import { randomId, randomInt, randomString } from './random.js';
 
 export const AVATAR_COUNT = 24;
-export const LANGS = ['en', 'ar', 'both'];
 
 const CHOOSE_MS = 15_000;
 const REVEAL_MS = 6_000;
@@ -17,6 +16,7 @@ const MAX_POINTS = 100_000;
 const ORDER_BONUS = [50, 30, 15];
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const LETTER = /[\p{L}\p{N}]/u;
+const TOKEN_RE = /^[\w-]{16,64}$/;
 
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
@@ -31,11 +31,27 @@ function cleanPoints(p, max) {
   return out;
 }
 
+// Validates what a client sends about itself. The token is the client's secret seat key.
+export function cleanProfile(data) {
+  return {
+    name: cleanText(data?.name, 20) || `Player${100 + randomInt(900)}`,
+    avatar: Number.isInteger(data?.avatar) && data.avatar >= 0 && data.avatar < AVATAR_COUNT ? data.avatar : 0,
+    token: typeof data?.token === 'string' && TOKEN_RE.test(data.token) ? data.token : randomString(24, 'abcdefghijklmnopqrstuvwxyz0123456789'),
+  };
+}
+
+/**
+ * One game room: players, turns, timer, hints, scoring and the shared drawing.
+ * It knows nothing about the network; the hosting platform passes in a transport:
+ *   send(connId, event, data)  deliver a message to one connection
+ *   close(connId, reason)      tell a connection it is no longer in the room, then drop it
+ *   changed()                  room state changed (persist it, refresh the lobby listing)
+ */
 export class Room {
-  constructor(io, code, { isPublic = false, lang = 'en' } = {}) {
-    this.io = io;
+  constructor(code, { isPublic = false, lang = 'en' } = {}, transport) {
     this.code = code;
-    this.isPublic = isPublic;
+    this.transport = transport;
+    this.isPublic = isPublic === true;
     this.settings = { lang: LANGS.includes(lang) ? lang : 'en', rounds: 3, drawTime: 80, maxPlayers: 10, hints: 2, customOnly: false };
     this.customText = '';
     this.customEntries = [];
@@ -61,7 +77,6 @@ export class Room {
     this.timer = null;
     this.ticker = null;
     this.deadline = 0;
-    this.onDestroy = null;
   }
 
   get connected() {
@@ -85,6 +100,7 @@ export class Room {
   summary() {
     return {
       code: this.code,
+      isPublic: this.isPublic,
       lang: this.settings.lang,
       players: this.connected.length,
       maxPlayers: this.settings.maxPlayers,
@@ -95,48 +111,65 @@ export class Room {
     };
   }
 
+  // ---------------------------------------------------------------- persistence
+
+  // What must survive the room being unloaded from memory. A running game can't be resumed,
+  // so only the room itself (settings, players, scores) is kept and play restarts from the lobby.
+  snapshot() {
+    return {
+      code: this.code,
+      isPublic: this.isPublic,
+      settings: this.settings,
+      customText: this.customText,
+      hostId: this.hostId,
+      kicked: [...this.kicked],
+      players: [...this.players.values()].map(({ id, token, name, avatar, score }) => ({ id, token, name, avatar, score })),
+    };
+  }
+
+  // `live` maps player id → connection id for connections that are still open.
+  // Everyone else gets the usual grace period to come back.
+  static restore(snapshot, transport, live) {
+    const room = new Room(snapshot.code, { isPublic: snapshot.isPublic }, transport);
+    Object.assign(room.settings, snapshot.settings);
+    room.customText = snapshot.customText;
+    room.customEntries = parseCustomWords(snapshot.customText);
+    room.kicked = new Set(snapshot.kicked);
+    for (const p of snapshot.players) {
+      const player = { ...p, gain: 0, guessed: false, connId: live.get(p.id) ?? null, connected: live.has(p.id) };
+      room.players.set(p.id, player);
+      if (!player.connected) player.graceTimer = setTimeout(() => room.remove(player.id, 'left'), GRACE_MS);
+    }
+    room.hostId = room.players.has(snapshot.hostId) ? snapshot.hostId : null;
+    if (!room.players.get(room.hostId)?.connected) room.pickHost();
+    room.checkAutostart();
+    return room;
+  }
+
   // ---------------------------------------------------------------- membership
 
-  join(socket, profile) {
+  join(connId, profile) {
     if (this.kicked.has(profile.token)) return { error: 'kicked' };
     let player = [...this.players.values()].find(p => p.token === profile.token);
     if (player) {
       clearTimeout(player.graceTimer);
-      if (player.connected && player.socketId !== socket.id) {
-        const old = this.io.sockets.sockets.get(player.socketId);
-        if (old) {
-          old.emit('room:closed', { reason: 'elsewhere' });
-          old.leave(this.code);
-          old.data.room = null;
-        }
-      }
+      if (player.connected && player.connId !== connId) this.transport.close(player.connId, 'elsewhere');
       Object.assign(player, { name: profile.name, avatar: profile.avatar });
     } else {
       if (this.players.size >= this.settings.maxPlayers) return { error: 'full' };
-      player = {
-        id: randomBytes(6).toString('hex'),
-        token: profile.token,
-        name: profile.name,
-        avatar: profile.avatar,
-        score: 0,
-        gain: 0,
-        guessed: false,
-      };
+      player = { id: randomId(), token: profile.token, name: profile.name, avatar: profile.avatar, score: 0, gain: 0, guessed: false };
       this.players.set(player.id, player);
       if (this.inGame) this.queue.push(player.id);
     }
-    player.socketId = socket.id;
+    player.connId = connId;
     player.connected = true;
-    socket.join(this.code);
-    socket.data.room = this.code;
-    socket.data.pid = player.id;
     if (!this.players.get(this.hostId)?.connected) this.hostId = player.id;
 
     this.system('joined', { name: player.name });
     this.broadcastState();
-    socket.emit('draw:history', this.history);
+    this.send(player, 'draw:history', this.history);
     this.checkAutostart();
-    return { ok: true, code: this.code };
+    return { ok: true, playerId: player.id };
   }
 
   disconnect(player) {
@@ -158,14 +191,9 @@ export class Room {
     clearTimeout(player.graceTimer);
     this.players.delete(id);
     this.queue = this.queue.filter(x => x !== id);
-    const socket = this.io.sockets.sockets.get(player.socketId);
-    if (socket?.data.room === this.code) {
-      if (reason === 'kicked') socket.emit('room:closed', { reason: 'kicked' });
-      socket.leave(this.code);
-      socket.data.room = null;
-    }
+    if (reason === 'kicked' && player.connected) this.transport.close(player.connId, 'kicked');
     this.system(reason === 'kicked' ? 'kicked' : 'left', { name: player.name });
-    if (this.players.size === 0) return this.destroy();
+    if (this.players.size === 0) return this.toLobby();
     if (this.hostId === id) this.pickHost();
 
     if (this.inGame && this.connected.length < 2) {
@@ -196,7 +224,6 @@ export class Room {
     this.clearTimers();
     for (const p of this.players.values()) clearTimeout(p.graceTimer);
     this.players.clear();
-    this.onDestroy?.();
   }
 
   // ---------------------------------------------------------------- timers
@@ -415,16 +442,16 @@ export class Room {
       }
       const key = toKey(text);
       if (this.answers.includes(key)) return this.correctGuess(player);
-      this.io.to(this.code).emit('chat', msg);
+      this.emit('chat', msg);
       if (isClose(key, this.answers)) this.send(player, 'chat', { type: 'close', key: 'close', params: { text } });
       return;
     }
-    this.io.to(this.code).emit('chat', msg);
+    this.emit('chat', msg);
   }
 
   handleDraw(player, op) {
     if (this.state !== 'drawing' || player.id !== this.drawerId || !op || typeof op !== 'object') return;
-    const relay = data => this.io.to(this.code).except(player.socketId).emit('draw', data);
+    const relay = data => this.emit('draw', data, player.id);
     switch (op.k) {
       case 'b': {
         const p = cleanPoints(op.p, 2);
@@ -458,25 +485,29 @@ export class Room {
         return relay({ k: 'u' });
       }
       case 'x':
-        this.resetCanvas(player.socketId);
+        this.resetCanvas(player.id);
     }
   }
 
-  resetCanvas(except) {
+  resetCanvas(exceptId) {
     this.history = [];
     this.historyPoints = 0;
     this.stroke = null;
-    (except ? this.io.to(this.code).except(except) : this.io.to(this.code)).emit('draw', { k: 'x' });
+    this.emit('draw', { k: 'x' }, exceptId);
   }
 
   // ---------------------------------------------------------------- state sync
 
-  system(key, params = {}, type = 'sys') {
-    this.io.to(this.code).emit('chat', { type, key, params });
+  send(player, event, data) {
+    if (player.connected) this.transport.send(player.connId, event, data);
   }
 
-  send(player, event, data) {
-    if (player.connected) this.io.to(player.socketId).emit(event, data);
+  emit(event, data, exceptId) {
+    for (const p of this.players.values()) if (p.id !== exceptId) this.send(p, event, data);
+  }
+
+  system(key, params = {}, type = 'sys') {
+    this.emit('chat', { type, key, params });
   }
 
   publicState() {
@@ -516,5 +547,6 @@ export class Room {
   broadcastState() {
     const pub = this.publicState();
     for (const p of this.players.values()) this.send(p, 'room:state', { ...pub, me: this.privateState(p) });
+    this.transport.changed();
   }
 }

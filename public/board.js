@@ -165,7 +165,7 @@ export class Board {
     c.addEventListener('pointerdown', e => this.down(e));
     c.addEventListener('pointermove', e => this.move(e));
     for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) c.addEventListener(type, () => this.up());
-    setInterval(() => this.flush(), 40);
+    setInterval(() => this.flush(), 50); // ~20 messages/s while drawing keeps usage within free limits
   }
 
   pos(e) {

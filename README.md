@@ -3,19 +3,18 @@
 A live multiplayer draw-and-guess game (in the style of Gartic / Skribbl) for English and Arabic players.
 One player draws, everyone else races to guess the word in the chat.
 
-## Run it
+Runs on **Cloudflare Workers + Durable Objects** at <https://kharbasha.abedmanzalji.com>.
+
+## Develop
 
 ```bash
 npm install
-npm start          # http://localhost:3000
-npm run dev        # same, restarts when server files change
-npm test           # word-matching tests + real multiplayer games against the server
+npm run dev        # local Cloudflare runtime at http://localhost:8787
+npm test           # game rules, Arabic/English matching, room directory
+npm run deploy     # publish to Cloudflare (first time: npx wrangler login)
 ```
 
-Node 20 or newer. Set `PORT` to change the port.
-
-**Try it with friends on the same Wi-Fi:** find your PC's local IP (`ipconfig` → IPv4 address, e.g. `192.168.1.20`)
-and open `http://192.168.1.20:3000` on their phones. Allow Node through the Windows firewall when asked.
+Node 20 or newer. Open the local URL in two browser tabs to play against yourself.
 
 ## Features
 
@@ -24,54 +23,67 @@ and open `http://192.168.1.20:3000` on their phones. Allow Node through the Wind
 - **Word language per room** — English, Arabic, or **Both** (drawer sees both words, guesses accepted in either).
 - **Arabic-aware guessing** — أ/إ/آ → ا, ة → ه, ى → ي, tashkeel and tatweel ignored, "ال" optional, Arabic-Indic digits.
   Near misses get a private "very close!" hint. ~250 built-in word pairs with common dialect alternatives.
-- **Custom words** — host can add their own (`cat|قطة|قط`, comma or new-line separated) or use only those.
+- **Custom words** — the host can add their own (`cat|قطة|قط`, comma or new-line separated) or use only those.
 - **Full RTL Arabic UI** with an English/عربي toggle; names and messages in either script display correctly.
 - **Drawing** — 18 colours, 5 brush sizes, fill bucket, eraser, undo (Ctrl+Z), clear; mouse, pen or touch.
 - **Fair play** — the server holds the word; guessers only ever receive blanks. Players who already guessed
-  (and the drawer) chat on a private channel so they can't spoil it. Host can kick.
+  (and the drawer) chat on a private channel so they can't spoil it. The host can kick.
 - **Resilient** — refresh or lose signal and you get your seat and score back within 20 s; late joiners see the drawing so far.
 - **Responsive** — desktop, tablet (portrait and landscape) and phone layouts; installable to the home screen.
 
-## How the real-time part works
+## How it works
 
-Every browser keeps a WebSocket (Socket.IO) connection open to the server. The server is the referee:
-it owns rooms, turn order, the timer, the secret word and the scores.
+```
+browser ──HTTP──▶ Worker ──▶ LobbyObject (one, global): room codes + public room list
+   │
+   └──WebSocket /ws/CODE──▶ Worker ──▶ RoomObject (one per room code) ──▶ Room (game rules)
+```
 
-- **Drawing:** the drawer's browser paints locally at once and sends point batches every 40 ms. The server checks
-  it's really their turn, stores the stroke (for late joiners) and relays it to everyone else.
-  All clients share an 800×600 coordinate space, so drawings look the same on any screen.
-- **Guessing:** chat goes to the server, which normalises and compares it to the answer. A correct guess is
-  announced without revealing the word; only that player is sent the word.
-- **State:** whenever something changes, each player gets a personal snapshot (the drawer's includes the word,
-  guessers' include blanks). Timers are sent as "time left" and counted down locally.
+- **Worker** (`src/worker.js`) serves the static site from `public/` and routes `/api/*` and `/ws/:code`.
+- **RoomObject** (`src/room-object.js`) is a Durable Object per room. It holds the players' WebSockets using the
+  Hibernation API: an idle room is unloaded from memory without dropping anyone, and restored from storage
+  when the next message arrives. Rooms are created close to the player who opens them.
+- **LobbyObject** (`src/lobby-object.js`) hands out unique codes and keeps the public room list; rooms report
+  changes and check in every 5 minutes.
+- **Room** (`src/core/room.js`) is the game itself — turns, timer, hints, scoring, drawing history — and knows
+  nothing about Cloudflare. It talks to players through a small transport (`send`, `close`, `changed`), which is
+  what makes it easy to test (`test/room.test.js`) and to move to another platform if ever needed.
+
+The server is the referee: it owns the secret word and the clock. The drawer's browser paints locally at once and
+sends point batches every 50 ms; the room relays them to the others and keeps them for late joiners. All clients
+share an 800×600 coordinate space, so drawings look the same on any screen.
 
 ## Project layout
 
 ```
-server/
-  index.js       Express + Socket.IO bootstrap
-  lobby.js       room directory, quick play, socket event wiring, rate limits
-  room.js        one room: players, turns, timer, hints, scoring, drawing history, state sync
-  normalize.js   guess normalisation (Arabic + English), "close guess" detection
-  words.js       word picking, custom-word parsing
-  wordlist.js    built-in English/Arabic word pairs  ← add words here
+src/
+  worker.js          request routing
+  room-object.js     Durable Object: room connections, persistence, lobby reporting
+  lobby-object.js    Durable Object: room codes, public room directory
+  core/              platform-independent game logic
+    room.js          one room: players, turns, timer, hints, scoring, drawing
+    directory.js     public room listing and quick-play choice
+    normalize.js     guess normalisation (Arabic + English), "close guess" detection
+    words.js         word picking, custom-word parsing
+    wordlist.js      built-in English/Arabic word pairs  ← add words here
+    random.js        crypto-random helpers
 public/
-  index.html     page shell (home + room screens)
-  app.js         UI logic, socket events, rendering
-  board.js       canvas drawing, flood fill, stroke batching
-  i18n.js        English & Arabic UI strings
-  style.css      styles and responsive layouts
-  icon*.svg/png  app icon, manifest.webmanifest
-test/            node:test suites
+  index.html         page shell (home + room screens)
+  app.js             UI logic and rendering
+  net.js             API calls and the reconnecting room WebSocket
+  board.js           canvas drawing, flood fill, stroke batching
+  i18n.js            English & Arabic UI strings
+  style.css          styles and responsive layouts
+  icon*.svg/png      app icon, manifest.webmanifest
+test/                node:test suites
+wrangler.jsonc       Cloudflare configuration (bindings, custom domain)
 ```
 
-## Deploying
+## Costs
 
-The game needs a **long-running Node server** with WebSocket support — e.g. Render, Railway, Fly.io,
-or any VPS. Serverless hosts (Vercel/Netlify functions) won't work. Start command: `npm start`.
-
-All rooms live in memory on one process, which comfortably handles thousands of concurrent players.
-To run several instances later, add the Socket.IO Redis adapter and sticky sessions.
+Durable Objects work on the **Workers Free plan** (daily limits, including 100,000 requests/day). Drawing traffic
+counts toward that, so a busy day of play could reach the limit; the **Workers Paid plan ($5/month)** lifts it
+with plenty of headroom. Idle rooms hibernate and cost nothing while players sit in the lobby.
 
 ## Ideas for next steps
 
