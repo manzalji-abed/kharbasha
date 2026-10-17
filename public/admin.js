@@ -186,6 +186,7 @@ function renderKpis(t) {
     tile('Guess success', pct(t.turns.correct, t.turns.guessers), `${fmt(t.turns.correct)} of ${fmt(t.turns.guessers)} guessers got it`),
     tile('Game length', duration(t.games.avgMs), `${t.games.avgPlayers ? t.games.avgPlayers.toFixed(1) : '–'} players on average`),
     tile('From invite links', pct(t.invited, t.visits), `${fmt(t.invited)} visits opened an invite`),
+    tile('Voice chat', fmt(t.voice.players), `${plural(t.voice.sessions, 'call joined', 'calls joined')} in ${plural(t.voice.rooms, 'room', 'rooms')}`),
   );
 }
 

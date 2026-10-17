@@ -37,6 +37,7 @@ export default {
       const code = await lobby.pickQuick(lang);
       return json(code ? { code } : await openRoom({ env, ctx, lobby, ip, client, visitor }, { lang, isPublic: true }));
     }
+    if (route === 'GET /api/ice') return json({ iceServers: await iceServers(env) });
     const info = url.pathname.match(/^\/api\/rooms\/([A-Za-z0-9]{5})$/);
     if (request.method === 'GET' && info) {
       const room = await lobby.info(info[1].toUpperCase());
@@ -58,6 +59,29 @@ async function openRoom({ env, ctx, lobby, ip, client, visitor }, options) {
     }
   }
   return { error: 'generic' };
+}
+
+const STUN_ONLY = [{ urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] }];
+
+// Network helpers for voice chat. STUN lets most players connect directly; with a Cloudflare
+// TURN key configured (secrets TURN_KEY_ID + TURN_KEY_API_TOKEN), players on strict networks
+// are relayed too.
+async function iceServers(env) {
+  if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) return STUN_ONLY;
+  try {
+    const res = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate-ice-servers`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttl: 6 * 3600 }),
+    });
+    if (!res.ok) throw new Error(`TURN credentials: HTTP ${res.status}`);
+    const { iceServers: servers } = await res.json();
+    // Port 53 is blocked by browsers and would only slow down connecting.
+    return servers.map(s => ({ ...s, urls: [].concat(s.urls).filter(u => !/:53\b/.test(u)) }));
+  } catch (err) {
+    console.error(err);
+    return STUN_ONLY;
+  }
 }
 
 function connectToRoom(request, env, url) {

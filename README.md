@@ -29,6 +29,26 @@ screens), wrong / close / correct guesses, Continue, a mid-turn refresh, a full 
 Test players use visitor ids starting with `e2e-`; remove their statistics afterwards with
 `npx wrangler d1 execute kharbasha-analytics --remote --file e2e/purge-test-data.sql`.
 
+## Voice chat
+
+Audio goes directly between browsers over WebRTC (`public/voice.js`): each player in voice has one connection to every
+other one. The room's WebSocket only carries the set-up messages (`voice` and `rtc`), which the server passes on
+between players who are both in voice.
+
+To connect, browsers use the servers from `GET /api/ice`. By default that is STUN only, which works for most home
+and mobile networks. Some strict networks (some offices, some mobile carriers) need a **TURN relay**. To switch on
+Cloudflare's relay ($0.05 per GB actually relayed; voice is roughly 20–30 MB per relayed person per hour):
+
+1. Cloudflare dashboard → **Realtime** (formerly "Calls") → **TURN** → create a TURN key → copy its **key ID** and
+   **API token**.
+2. In this folder:
+   ```bash
+   npx wrangler secret put TURN_KEY_ID          # paste the Token ID
+   npx wrangler secret put TURN_KEY_API_TOKEN   # paste the API token
+   ```
+
+No redeploy is needed: the Worker picks the relay up as soon as the secrets exist.
+
 ## Analytics
 
 <https://kharbasha.abedmanzalji.com/admin> (password: the `ADMIN_PASSWORD` secret, change it with
@@ -49,6 +69,8 @@ Test players use visitor ids starting with `e2e-`; remove their statistics after
   card showing the room before you join, and everyone picks a nickname first.
 - **No waiting between turns** — after each word is revealed, the next turn starts as soon as everyone presses
   Continue (or after 6 s).
+- **Voice chat in private rooms** — players opt in with 🎤 (mic off until then), mute themselves, or mute someone just
+  for themselves; whoever is talking gets a green glow. Up to 8 people. Not offered in public rooms.
 - **Word language per room** — English, Arabic, or **Both** (drawer sees both words, guesses accepted in either).
 - **Arabic-aware guessing** — أ/إ/آ → ا, ة → ه, ى → ي, tashkeel and tatweel ignored, "ال" optional, Arabic-Indic digits.
   Near misses get a private "very close!" hint. ~680 built-in word pairs with common dialect alternatives.
@@ -101,6 +123,7 @@ public/
   index.html         page shell (home + room screens)
   app.js             UI logic and rendering
   net.js             API calls and the reconnecting room WebSocket
+  voice.js           voice chat: microphone, WebRTC connections, "who's talking"
   board.js           canvas drawing, flood fill, stroke batching
   i18n.js            English & Arabic UI strings
   style.css          styles and responsive layouts

@@ -14,6 +14,8 @@ const H = 600;
 const MAX_OPS = 4_000;
 const MAX_POINTS = 100_000;
 const ORDER_BONUS = [50, 30, 15];
+const MAX_VOICE = 8; // every voice player connects to every other one, which stays light up to about 8
+const MAX_SIGNAL = 16_000; // bytes of one WebRTC offer/answer/candidate
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const LETTER = /[\p{L}\p{N}]/u;
 const TOKEN_RE = /^[\w-]{16,64}$/;
@@ -124,6 +126,8 @@ export class Room {
 
   // What must survive the room being unloaded from memory. A running game can't be resumed,
   // so only the room itself (settings, players, scores) is kept and play restarts from the lobby.
+  // Voice flags are kept too: a quiet room sleeps while its players are still talking, and their
+  // audio (which flows between browsers, not through the room) must not be cut when it wakes.
   snapshot() {
     return {
       code: this.code,
@@ -132,7 +136,8 @@ export class Room {
       customText: this.customText,
       hostId: this.hostId,
       kicked: [...this.kicked],
-      players: [...this.players.values()].map(({ id, token, name, avatar, score }) => ({ id, token, name, avatar, score })),
+      players: [...this.players.values()].map(({ id, token, visitor, bot, name, avatar, score, voice, muted }) =>
+        ({ id, token, visitor, bot, name, avatar, score, voice: Boolean(voice), muted: Boolean(muted) })),
     };
   }
 
@@ -145,7 +150,9 @@ export class Room {
     room.customEntries = parseCustomWords(snapshot.customText);
     room.kicked = new Set(snapshot.kicked);
     for (const p of snapshot.players) {
-      const player = { ...p, gain: 0, guessed: false, connId: live.get(p.id) ?? null, connected: live.has(p.id) };
+      const connected = live.has(p.id);
+      const voice = connected && !room.isPublic && p.voice === true;
+      const player = { ...p, gain: 0, guessed: false, connId: live.get(p.id) ?? null, connected, voice, muted: voice && p.muted === true };
       room.players.set(p.id, player);
       if (!player.connected) player.graceTimer = setTimeout(() => room.remove(player.id, 'left'), GRACE_MS);
     }
@@ -167,7 +174,19 @@ export class Room {
       Object.assign(player, { name: profile.name, avatar: profile.avatar });
     } else {
       if (this.players.size >= this.settings.maxPlayers) return { error: 'full' };
-      player = { id: randomId(), token: profile.token, name: profile.name, avatar: profile.avatar, score: 0, gain: 0, guessed: false };
+      player = {
+        id: randomId(),
+        token: profile.token,
+        visitor: profile.visitor,
+        bot: client.bot === true,
+        name: profile.name,
+        avatar: profile.avatar,
+        score: 0,
+        gain: 0,
+        guessed: false,
+        voice: false,
+        muted: false,
+      };
       this.players.set(player.id, player);
       if (this.inGame) this.queue.push(player.id);
       this.track('player_joined', { visitor: profile.visitor, name: profile.name, ...client });
@@ -184,7 +203,8 @@ export class Room {
   }
 
   disconnect(player) {
-    player.connected = false;
+    // Their audio connections are gone; the browser rejoins voice itself after reconnecting.
+    Object.assign(player, { connected: false, voice: false, muted: false });
     player.graceTimer = setTimeout(() => this.remove(player.id, 'left'), GRACE_MS);
     if (this.hostId === player.id) this.pickHost();
     if (this.drawerId === player.id && (this.state === 'choosing' || this.state === 'drawing')) {
@@ -270,6 +290,7 @@ export class Room {
     if (Number.isInteger(s.hints)) st.hints = clamp(s.hints, 0, 3);
     if (typeof s.customOnly === 'boolean') st.customOnly = s.customOnly;
     if (typeof s.isPublic === 'boolean') this.isPublic = s.isPublic;
+    if (this.isPublic) for (const p of this.players.values()) Object.assign(p, { voice: false, muted: false });
     if (typeof s.customText === 'string') {
       this.customText = s.customText.slice(0, 5000);
       this.customEntries = parseCustomWords(this.customText);
@@ -564,6 +585,34 @@ export class Room {
     this.emit('draw', { k: 'x' }, exceptId);
   }
 
+  // ---------------------------------------------------------------- voice chat
+
+  // Voice is only offered in private rooms (people who know each other), mic off until each player opts in.
+  setVoice(player, { on, muted } = {}) {
+    const joining = on === true && !player.voice;
+    if (on === true && this.isPublic) return this.send(player, 'chat', { type: 'sys', key: 'voicePrivateOnly', params: {} });
+    if (joining && this.connected.filter(p => p.voice).length >= MAX_VOICE) {
+      return this.send(player, 'chat', { type: 'sys', key: 'voiceFull', params: { n: MAX_VOICE } });
+    }
+    const leaving = on === false && player.voice;
+    player.voice = on === true;
+    player.muted = player.voice && muted === true;
+    if (joining) {
+      this.system('voiceOn', { name: player.name });
+      if (!player.bot) this.track('voice_joined', { visitor: player.visitor, name: player.name });
+    }
+    if (leaving) this.system('voiceOff', { name: player.name });
+    this.broadcastState();
+  }
+
+  // Passes WebRTC set-up messages (offers, answers, network candidates) between two voice players.
+  relaySignal(from, toId, signal) {
+    const to = this.players.get(toId);
+    if (!from.voice || !to?.voice || !signal || typeof signal !== 'object') return;
+    if (JSON.stringify(signal).length > MAX_SIGNAL) return;
+    this.send(to, 'rtc', { from: from.id, signal });
+  }
+
   // ---------------------------------------------------------------- state sync
 
   send(player, event, data) {
@@ -596,6 +645,7 @@ export class Room {
       masks: this.state === 'drawing' ? this.masks() : null,
       reveal: this.state === 'reveal' ? this.lastReveal : null,
       ready: this.state === 'reveal' ? [...this.ready] : [],
+      voiceAllowed: !this.isPublic,
       players: [...this.players.values()].map(p => ({
         id: p.id,
         name: p.name,
@@ -604,6 +654,8 @@ export class Room {
         gain: p.gain,
         guessed: p.guessed,
         connected: p.connected,
+        voice: Boolean(p.voice),
+        muted: Boolean(p.muted),
       })),
     };
   }
