@@ -380,7 +380,8 @@ function renderBar(drawer, amDrawer) {
 
 function maskEl(mask) {
   const letters = mask.chars.filter(c => c === null || /[\p{L}\p{N}]/u.test(c)).length;
-  return h('div', { class: 'mask', lang: mask.lang, dir: dirOf(mask.lang), 'aria-label': t('letters', { n: letters }) },
+  const size = mask.chars.length > 12 ? ' long' : mask.chars.length > 8 ? ' mid' : '';
+  return h('div', { class: `mask${size}`, lang: mask.lang, dir: dirOf(mask.lang), 'aria-label': t('letters', { n: letters }) },
     ...mask.chars.map(c => (c === ' ' ? h('span', { class: 'gap' }) : h('span', { class: c === null ? 'slot' : 'slot shown' }, c ?? ''))),
     h('sup', { class: 'count' }, String(letters)));
 }
@@ -460,7 +461,8 @@ function renderLobby() {
   $('#customWrap').hidden = !host;
   $('#customOnlyWrap').hidden = !host;
   const custom = $('#setCustom');
-  if (host && document.activeElement !== custom && typeof room.me.customText === 'string') custom.value = room.me.customText;
+  // Never overwrite text the host is typing or hasn't sent yet.
+  if (host && document.activeElement !== custom && !customTimer && typeof room.me.customText === 'string') custom.value = room.me.customText;
   $('#customInfo').hidden = host || !room.customCount;
   $('#customInfo').textContent = t('customCount', { n: room.customCount });
   $('#startBtn').hidden = !host;
@@ -544,10 +546,18 @@ function initLobby() {
   $('#setHints').onchange = e => update({ hints: Number(e.target.value) });
   $('#setPublic').onchange = e => update({ isPublic: e.target.checked });
   $('#setCustomOnly').onchange = e => update({ customOnly: e.target.checked });
-  $('#setCustom').addEventListener('input', e => {
+  // Custom words are sent shortly after typing stops, or at once when the box loses focus.
+  const flushCustom = () => {
+    if (!customTimer) return;
     clearTimeout(customTimer);
-    customTimer = setTimeout(() => update({ customText: e.target.value }), 500);
+    customTimer = null;
+    update({ customText: $('#setCustom').value });
+  };
+  $('#setCustom').addEventListener('input', () => {
+    clearTimeout(customTimer);
+    customTimer = setTimeout(flushCustom, 500);
   });
+  $('#setCustom').addEventListener('blur', flushCustom);
   $('#startBtn').onclick = () => send('start');
   $('#againBtn').onclick = () => send('start');
 }
