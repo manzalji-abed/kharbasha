@@ -6,8 +6,8 @@ const MAX_RETRY_MS = 8_000;
 export async function api(path, body) {
   const init = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
   const res = await fetch(path, init);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
+  return res.status === 204 ? null : res.json();
 }
 
 /**

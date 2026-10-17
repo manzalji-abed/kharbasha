@@ -7,12 +7,14 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node --test"
+    "test": "node --test",
+    "e2e": "node e2e/run.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
+    "puppeteer-core": "^23.11.1",
     "wrangler": "^4.151.1"
   }
 }

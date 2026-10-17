@@ -33,8 +33,9 @@
       <p class="tagline" data-i18n="tagline"></p>
 
       <div class="invite-banner" id="inviteBanner" hidden>
-        <span id="inviteText"></span>
-        <button class="btn green" id="inviteJoinBtn" data-i18n="joinRoom"></button>
+        <span data-i18n="invitedTo"></span>
+        <strong class="invite-room" id="inviteRoom"></strong>
+        <small id="inviteMeta"></small>
       </div>
 
       <div class="avatar-picker">
@@ -48,21 +49,27 @@
         <input id="nameInput" maxlength="20" dir="auto" autocomplete="nickname" data-i18n-ph="namePh">
       </label>
 
-      <div class="field">
-        <span data-i18n="wordLang"></span>
-        <div class="seg" id="langSeg">
-          <button data-lang="en" data-i18n="langEn"></button>
-          <button data-lang="ar" data-i18n="langAr"></button>
-          <button data-lang="both" data-i18n="langBoth"></button>
+      <div class="actions" id="mainActions">
+        <div class="field">
+          <span data-i18n="wordLang"></span>
+          <div class="seg" id="langSeg">
+            <button data-lang="en" data-i18n="langEn"></button>
+            <button data-lang="ar" data-i18n="langAr"></button>
+            <button data-lang="both" data-i18n="langBoth"></button>
+          </div>
         </div>
+        <button class="btn big green" id="playBtn" data-i18n="play"></button>
+        <button class="btn yellow" id="createBtn" data-i18n="createRoom"></button>
+        <form class="join-row" id="joinForm">
+          <input id="codeInput" maxlength="5" autocomplete="off" spellcheck="false" data-i18n-ph="codePh">
+          <button class="btn blue" data-i18n="join"></button>
+        </form>
       </div>
 
-      <button class="btn big green" id="playBtn" data-i18n="play"></button>
-      <button class="btn yellow" id="createBtn" data-i18n="createRoom"></button>
-      <form class="join-row" id="joinForm">
-        <input id="codeInput" maxlength="5" autocomplete="off" spellcheck="false" data-i18n-ph="codePh">
-        <button class="btn blue" data-i18n="join"></button>
-      </form>
+      <div class="actions" id="inviteActions" hidden>
+        <button class="btn big green" id="inviteJoinBtn" data-i18n="joinRoom"></button>
+        <button class="link-btn" id="skipInviteBtn" data-i18n="orMain"></button>
+      </div>
       <p class="error" id="homeError" role="alert"></p>
     </section>
 
@@ -79,6 +86,7 @@
           <li><span class="how-icon">⚡</span><span data-i18n="how3"></span></li>
         </ol>
       </section>
+      <p class="privacy" data-i18n="privacy"></p>
     </div>
   </main>
 
@@ -86,7 +94,10 @@
   <main id="room" class="room" hidden>
     <div class="roombar card">
       <div class="timer" id="timer"></div>
-      <div class="round-info" id="roundInfo"></div>
+      <div class="room-title">
+        <bdi class="room-name" id="roomTitle"></bdi>
+        <span class="round-info" id="roundInfo"></span>
+      </div>
       <div class="word-area" id="wordArea"></div>
       <div class="room-actions">
         <button class="btn small blue" id="inviteBtn">🔗 <span data-i18n="invite"></span></button>
@@ -105,6 +116,9 @@
           <div class="panel lobby-panel" id="lobbyPanel" hidden>
             <h2 data-i18n="lobbyTitle"></h2>
             <div class="settings">
+              <label class="wide"><span data-i18n="roomName"></span>
+                <input id="setName" maxlength="30" dir="auto" autocomplete="off">
+              </label>
               <label><span data-i18n="wordLang"></span>
                 <select id="setLang">
                   <option value="en" data-i18n="langEn"></option>
@@ -138,6 +152,8 @@
             <p class="muted reveal-label" id="revealLabel" data-i18n="theWordWas"></p>
             <div class="reveal-word" id="revealWord"></div>
             <ul class="gains" id="gains"></ul>
+            <button class="btn green continue-btn" id="continueBtn"></button>
+            <p class="muted reveal-status" id="revealStatus"></p>
           </div>
 
           <div class="panel" id="overPanel" hidden>

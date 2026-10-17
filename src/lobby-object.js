@@ -32,6 +32,14 @@ export class LobbyObject extends DurableObject {
     return this.directory.pickQuick(lang, Date.now());
   }
 
+  info(code) {
+    return this.directory.get(code, Date.now());
+  }
+
+  live() {
+    return this.directory.live(Date.now());
+  }
+
   // A code not used by any known room. The room object itself has the final say (see RoomObject.init).
   allocate(ip) {
     const now = Date.now();

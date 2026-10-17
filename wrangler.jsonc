@@ -13,6 +13,15 @@
   },
   // SQLite-backed Durable Objects are available on the Workers Free plan.
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomObject", "LobbyObject"] }],
+  // Usage analytics behind /admin. Schema: migrations/*.sql (npx wrangler d1 migrations apply kharbasha-analytics --remote).
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kharbasha-analytics",
+      "database_id": "3842186a-e3a7-4ee8-8369-04c0ad84379b",
+      "migrations_dir": "migrations"
+    }
+  ],
   // Cloudflare creates the DNS record and certificate for this subdomain on deploy.
   "routes": [{ "pattern": "kharbasha.abedmanzalji.com", "custom_domain": true }],
   "observability": { "enabled": true }

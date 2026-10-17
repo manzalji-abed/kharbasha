@@ -10,19 +10,48 @@ Runs on **Cloudflare Workers + Durable Objects** at <https://kharbasha.abedmanza
 ```bash
 npm install
 npm run dev        # local Cloudflare runtime at http://localhost:8787
-npm test           # game rules, Arabic/English matching, room directory
+npm test           # game rules, Arabic/English matching, room directory, analytics
+npm run e2e        # real Chrome plays a full game on desktop, tablet and phone (see below)
 npm run deploy     # publish to Cloudflare (first time: npx wrangler login)
 ```
 
 Node 20 or newer. Open the local URL in two browser tabs to play against yourself.
 
+For local development, create `.dev.vars` (not committed) with `ADMIN_PASSWORD=...` and apply the analytics schema once
+with `npx wrangler d1 migrations apply kharbasha-analytics --local`.
+
+### End-to-end test
+
+`npm run e2e -- https://kharbasha.abedmanzalji.com` drives real Chrome sessions through the whole game: nickname
+check, named private room, invite link, joining by code on an Arabic phone, drawing (pixels are checked on the other
+screens), wrong / close / correct guesses, Continue, a mid-turn refresh, a full game, quick play, kicking, and — with
+`ADMIN_PASSWORD` set — the analytics dashboard. Screenshots land in `e2e/screenshots/`. `HEADFUL=1` shows the browsers.
+Test players use visitor ids starting with `e2e-`; remove their statistics afterwards with
+`npx wrangler d1 execute kharbasha-analytics --remote --file e2e/purge-test-data.sql`.
+
+## Analytics
+
+<https://kharbasha.abedmanzalji.com/admin> (password: the `ADMIN_PASSWORD` secret, change it with
+`npx wrangler secret put ADMIN_PASSWORD`). Everything stays on Cloudflare:
+
+- **D1 database `kharbasha-analytics`** stores visits (country, region, city, device, OS, browser, app language,
+  referrer), rooms opened, players joining (nickname, country, device), games (room name, language, players, winner,
+  length, finished or abandoned) and turns (word, guessers, correct guesses, duration). Schema: `migrations/`.
+- Visitors are identified by a random id in their browser (to count unique and returning players); no IP addresses are
+  stored. Bots and headless browsers are skipped. Writes never block or break the game.
+- The dashboard shows who's online now, totals, daily visitors/players/games, countries and cities, devices, operating
+  systems, browsers, languages, where visitors came from, the most drawn and hardest words, and recent games and players.
+
 ## Features
 
 - **Live rooms** — public rooms ("Play now" fills the busiest one) and private rooms shared by link or 5-letter code.
-  Public rooms start by themselves 20 s after two players are in.
+  Public rooms start by themselves 20 s after two players are in. Hosts can name their room; invite links open a
+  card showing the room before you join, and everyone picks a nickname first.
+- **No waiting between turns** — after each word is revealed, the next turn starts as soon as everyone presses
+  Continue (or after 6 s).
 - **Word language per room** — English, Arabic, or **Both** (drawer sees both words, guesses accepted in either).
 - **Arabic-aware guessing** — أ/إ/آ → ا, ة → ه, ى → ي, tashkeel and tatweel ignored, "ال" optional, Arabic-Indic digits.
-  Near misses get a private "very close!" hint. ~250 built-in word pairs with common dialect alternatives.
+  Near misses get a private "very close!" hint. ~680 built-in word pairs with common dialect alternatives.
 - **Custom words** — the host can add their own (`cat|قطة|قط`, comma or new-line separated) or use only those.
 - **Full RTL Arabic UI** with an English/عربي toggle; names and messages in either script display correctly.
 - **Drawing** — 18 colours, 5 brush sizes, fill bucket, eraser, undo (Ctrl+Z), clear; mouse, pen or touch.
@@ -59,7 +88,8 @@ share an 800×600 coordinate space, so drawings look the same on any screen.
 src/
   worker.js          request routing
   room-object.js     Durable Object: room connections, persistence, lobby reporting
-  lobby-object.js    Durable Object: room codes, public room directory
+  lobby-object.js    Durable Object: room codes, public room directory, live counts
+  analytics/         usage statistics in D1: request context, writes, dashboard queries, /api/admin
   core/              platform-independent game logic
     room.js          one room: players, turns, timer, hints, scoring, drawing
     directory.js     public room listing and quick-play choice
@@ -74,7 +104,10 @@ public/
   board.js           canvas drawing, flood fill, stroke batching
   i18n.js            English & Arabic UI strings
   style.css          styles and responsive layouts
+  admin.html/js/css  the analytics dashboard (/admin)
   icon*.svg/png      app icon, manifest.webmanifest
+migrations/          D1 analytics schema
+e2e/                 end-to-end browser test and test-data cleanup
 test/                node:test suites
 wrangler.jsonc       Cloudflare configuration (bindings, custom domain)
 ```

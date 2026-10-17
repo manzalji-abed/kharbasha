@@ -40,4 +40,23 @@ export class Directory {
   pickQuick(lang, now) {
     return this.list(lang, now).find(r => r.players < r.maxPlayers)?.code ?? null;
   }
+
+  // What an invite link shows before joining (public or private).
+  get(code, now) {
+    const room = this.rooms.get(code);
+    if (!room || now - room.seen > STALE_MS) return null;
+    const { seen, ...info } = room;
+    return info;
+  }
+
+  // Who is playing right now, across public and private rooms.
+  live(now) {
+    const rooms = [...this.rooms.values()].filter(r => r.players > 0 && now - r.seen <= STALE_MS);
+    return {
+      rooms: rooms.length,
+      publicRooms: rooms.filter(r => r.isPublic).length,
+      playing: rooms.filter(r => r.state !== 'lobby').length,
+      players: rooms.reduce((sum, r) => sum + r.players, 0),
+    };
+  }
 }
