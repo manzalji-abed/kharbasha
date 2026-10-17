@@ -25,6 +25,17 @@ test('quick play picks the busiest room with a free seat', () => {
   assert.equal(d.pickQuick('ar', 1), null);
 });
 
+test('invite info and live counts cover private rooms too', () => {
+  const d = new Directory();
+  d.update(room('PRIVA', { isPublic: false, players: 3, state: 'drawing', name: 'Family' }), 0);
+  d.update(room('PUBLC', { players: 2 }), 0);
+  d.update(room('EMPTY', { players: 0 }), 0);
+  assert.equal(d.get('PRIVA', 1).name, 'Family');
+  assert.equal('seen' in d.get('PRIVA', 1), false);
+  assert.equal(d.get('NOPEE', 1), null);
+  assert.deepEqual(d.live(1), { rooms: 2, publicRooms: 1, playing: 1, players: 5 });
+});
+
 test('rooms that stop reporting go stale', () => {
   const d = new Directory([{ ...room('OLDDD'), seen: 0 }]);
   assert.deepEqual(d.stale(STALE_MS + 1), ['OLDDD']);

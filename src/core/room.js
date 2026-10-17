@@ -17,6 +17,7 @@ const ORDER_BONUS = [50, 30, 15];
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const LETTER = /[\p{L}\p{N}]/u;
 const TOKEN_RE = /^[\w-]{16,64}$/;
+const VISITOR_RE = /^[\w-]{8,64}$/;
 
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
@@ -31,12 +32,14 @@ function cleanPoints(p, max) {
   return out;
 }
 
-// Validates what a client sends about itself. The token is the client's secret seat key.
+// Validates what a client sends about itself. The token is the client's secret seat key;
+// the visitor id is an anonymous per-browser id used only for usage statistics.
 export function cleanProfile(data) {
   return {
     name: cleanText(data?.name, 20) || `Player${100 + randomInt(900)}`,
     avatar: Number.isInteger(data?.avatar) && data.avatar >= 0 && data.avatar < AVATAR_COUNT ? data.avatar : 0,
     token: typeof data?.token === 'string' && TOKEN_RE.test(data.token) ? data.token : randomString(24, 'abcdefghijklmnopqrstuvwxyz0123456789'),
+    visitor: typeof data?.visitor === 'string' && VISITOR_RE.test(data.visitor) ? data.visitor : null,
   };
 }
 
@@ -46,13 +49,15 @@ export function cleanProfile(data) {
  *   send(connId, event, data)  deliver a message to one connection
  *   close(connId, reason)      tell a connection it is no longer in the room, then drop it
  *   changed()                  room state changed (persist it, refresh the lobby listing)
+ *   track(event, data)         a moment worth counting happened (player joined, game started,
+ *                              turn ended, game ended); the platform decides where it's stored
  */
 export class Room {
   constructor(code, { isPublic = false, lang = 'en' } = {}, transport) {
     this.code = code;
     this.transport = transport;
     this.isPublic = isPublic === true;
-    this.settings = { lang: LANGS.includes(lang) ? lang : 'en', rounds: 3, drawTime: 80, maxPlayers: 10, hints: 2, customOnly: false };
+    this.settings = { name: '', lang: LANGS.includes(lang) ? lang : 'en', rounds: 3, drawTime: 80, maxPlayers: 10, hints: 2, customOnly: false };
     this.customText = '';
     this.customEntries = [];
     this.players = new Map();
@@ -70,6 +75,9 @@ export class Room {
     this.guessCount = 0;
     this.turnStart = 0;
     this.lastReveal = null;
+    this.ready = new Set(); // players who pressed Continue on the reveal screen
+    this.gameId = null;
+    this.gameStartedAt = 0;
     this.usedWords = new Set();
     this.history = [];
     this.historyPoints = 0;
@@ -100,6 +108,7 @@ export class Room {
   summary() {
     return {
       code: this.code,
+      name: this.settings.name,
       isPublic: this.isPublic,
       lang: this.settings.lang,
       players: this.connected.length,
@@ -148,7 +157,8 @@ export class Room {
 
   // ---------------------------------------------------------------- membership
 
-  join(connId, profile) {
+  // `client` is what the platform knows about the connection (country, device…), for statistics.
+  join(connId, profile, client = {}) {
     if (this.kicked.has(profile.token)) return { error: 'kicked' };
     let player = [...this.players.values()].find(p => p.token === profile.token);
     if (player) {
@@ -160,6 +170,7 @@ export class Room {
       player = { id: randomId(), token: profile.token, name: profile.name, avatar: profile.avatar, score: 0, gain: 0, guessed: false };
       this.players.set(player.id, player);
       if (this.inGame) this.queue.push(player.id);
+      this.track('player_joined', { visitor: profile.visitor, name: profile.name, ...client });
     }
     player.connId = connId;
     player.connected = true;
@@ -178,7 +189,7 @@ export class Room {
     if (this.hostId === player.id) this.pickHost();
     if (this.drawerId === player.id && (this.state === 'choosing' || this.state === 'drawing')) {
       this.endTurn('drawerLeft');
-    } else {
+    } else if (!this.checkAllReady()) {
       this.checkAllGuessed();
       this.checkAutostart();
       this.broadcastState();
@@ -201,6 +212,7 @@ export class Room {
       return this.toLobby();
     }
     if (this.drawerId === id && (this.state === 'choosing' || this.state === 'drawing')) return this.endTurn('drawerLeft');
+    if (this.checkAllReady()) return;
     this.checkAllGuessed();
     this.checkAutostart();
     this.broadcastState();
@@ -250,6 +262,7 @@ export class Room {
   updateSettings(player, s) {
     if (player.id !== this.hostId || this.state !== 'lobby') return;
     const st = this.settings;
+    if (typeof s.name === 'string') st.name = cleanText(s.name, 30);
     if (LANGS.includes(s.lang)) st.lang = s.lang;
     if (Number.isInteger(s.rounds)) st.rounds = clamp(s.rounds, 1, 10);
     if (Number.isInteger(s.drawTime)) st.drawTime = clamp(s.drawTime, 30, 240);
@@ -290,6 +303,16 @@ export class Room {
     for (const p of this.players.values()) Object.assign(p, { score: 0, gain: 0, guessed: false });
     this.round = 0;
     this.usedWords.clear();
+    this.gameId = randomId();
+    this.gameStartedAt = Date.now();
+    this.track('game_started', {
+      gameId: this.gameId,
+      roomName: this.settings.name,
+      lang: this.settings.lang,
+      isPublic: this.isPublic,
+      players: this.connected.length,
+      rounds: this.settings.rounds,
+    });
     this.nextRound();
   }
 
@@ -404,21 +427,66 @@ export class Room {
       drawer.gain = Math.round((200 * correct) / guessers.length);
       drawer.score += drawer.gain;
     }
+    if (wasDrawing) {
+      this.track('turn_ended', {
+        gameId: this.gameId,
+        wordEn: this.entry.en[0] ?? null,
+        wordAr: this.entry.ar[0] ?? null,
+        custom: this.entry.key.startsWith('c:'),
+        drawer: drawer?.name ?? null,
+        guessers: guessers.length,
+        correct,
+        durationMs: Date.now() - this.turnStart,
+        reason,
+      });
+    }
     this.lastReveal = { reason, word: this.entry ? this.label(this.entry) : null };
     this.state = 'reveal';
     this.options = null;
+    this.ready.clear();
     this.setTimer(this.entry ? REVEAL_MS : 2_500, () => this.nextTurn());
     this.broadcastState();
   }
 
+  // Continue button on the reveal screen: once everyone still here has pressed it, move on.
+  markReady(player) {
+    if (this.state !== 'reveal') return;
+    this.ready.add(player.id);
+    if (!this.checkAllReady()) this.broadcastState();
+  }
+
+  checkAllReady() {
+    if (this.state !== 'reveal') return false;
+    const waiting = this.connected.filter(p => !this.ready.has(p.id));
+    if (waiting.length || !this.ready.size) return false;
+    this.nextTurn();
+    return true;
+  }
+
   endGame() {
     this.clearTimers();
+    this.finishGame(true);
     Object.assign(this, { state: 'gameover', drawerId: null, entry: null, options: null });
     this.setTimer(GAMEOVER_MS, () => this.toLobby());
     this.broadcastState();
   }
 
+  // Records how a game ended: played to the end, or abandoned when players left.
+  finishGame(completed) {
+    if (!this.gameId) return;
+    const ranked = [...this.players.values()].sort((a, b) => b.score - a.score);
+    this.track('game_ended', {
+      gameId: this.gameId,
+      completed,
+      durationMs: Date.now() - this.gameStartedAt,
+      winner: completed ? ranked[0]?.name ?? null : null,
+      players: this.players.size,
+    });
+    this.gameId = null;
+  }
+
   toLobby() {
+    this.finishGame(false);
     this.clearTimers();
     Object.assign(this, { state: 'lobby', round: 0, queue: [], drawerId: null, entry: null, options: null, lastReveal: null });
     for (const p of this.players.values()) p.guessed = false;
@@ -510,6 +578,10 @@ export class Room {
     this.emit('chat', { type, key, params });
   }
 
+  track(event, data) {
+    this.transport.track?.(event, data);
+  }
+
   publicState() {
     return {
       code: this.code,
@@ -523,6 +595,7 @@ export class Room {
       timeLeft: this.timer ? Math.max(0, this.deadline - Date.now()) : 0,
       masks: this.state === 'drawing' ? this.masks() : null,
       reveal: this.state === 'reveal' ? this.lastReveal : null,
+      ready: this.state === 'reveal' ? [...this.ready] : [],
       players: [...this.players.values()].map(p => ({
         id: p.id,
         name: p.name,

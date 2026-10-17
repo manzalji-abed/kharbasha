@@ -58,19 +58,24 @@ const store = {
 
 // ---------------------------------------------------------------- state
 
+const randomToken = length => Array.from(crypto.getRandomValues(new Uint8Array(length)), b => TOKEN_CHARS[b & 63]).join('');
+const validId = (value, min) => typeof value === 'string' && new RegExp(`^[\\w-]{${min},64}$`).test(value);
+
 const savedAvatar = store.get('avatar', null);
 const savedToken = store.get('token', null, 'sessionStorage');
+const savedVisitor = store.get('visitor', null);
 const profile = {
   name: String(store.get('name', '') ?? ''),
   avatar: Number.isInteger(savedAvatar) && savedAvatar >= 0 && savedAvatar < AVATARS.length
     ? savedAvatar
     : Math.floor(Math.random() * AVATARS.length),
   // Per-tab secret that lets the server hand your seat back after a refresh or a dropped connection.
-  token: typeof savedToken === 'string' && /^[\w-]{16,64}$/.test(savedToken)
-    ? savedToken
-    : Array.from(crypto.getRandomValues(new Uint8Array(24)), b => TOKEN_CHARS[b & 63]).join(''),
+  token: validId(savedToken, 16) ? savedToken : randomToken(24),
+  // Anonymous per-browser id, only used to count unique and returning players.
+  visitor: validId(savedVisitor, 8) ? savedVisitor : randomToken(20),
 };
 store.set('token', profile.token, 'sessionStorage');
+store.set('visitor', profile.visitor);
 
 const initialUiLang = store.get('uiLang', null) ?? (navigator.language?.toLowerCase().startsWith('ar') ? 'ar' : 'en');
 let wordLang = ['en', 'ar', 'both'].includes(store.get('wordLang', null)) ? store.get('wordLang', null) : initialUiLang;
@@ -86,8 +91,9 @@ let lastTick = 0;
 let lastRooms = [];
 let roomPoll = null;
 let toastTimer = null;
-let customTimer = null;
+let inviteInfo = null; // room shown on the invite card
 let audio = null;
+const pendingText = new Map(); // lobby text field → timer for its not-yet-sent edit
 
 const send = (type, data) => conn?.send(type, data);
 const board = new Board($('#board'), op => send('draw', op));
@@ -115,6 +121,8 @@ function initHome() {
   name.addEventListener('input', () => {
     profile.name = name.value;
     store.set('name', profile.name);
+    name.classList.remove('needs-name');
+    if (name.value.trim() && $('#homeError').textContent === t('needName')) showError('');
   });
   $('#avPrev').onclick = () => cycleAvatar(-1);
   $('#avNext').onclick = () => cycleAvatar(1);
@@ -126,9 +134,10 @@ function initHome() {
       renderLangSeg();
     };
   }
-  $('#playBtn').onclick = () => openNewRoom('/api/quick', { lang: wordLang });
-  $('#createBtn').onclick = () => openNewRoom('/api/rooms', { lang: wordLang, isPublic: false });
+  $('#playBtn').onclick = () => openNewRoom('/api/quick', { lang: wordLang, visitor: profile.visitor });
+  $('#createBtn').onclick = () => openNewRoom('/api/rooms', { lang: wordLang, isPublic: false, visitor: profile.visitor });
   $('#inviteJoinBtn').onclick = () => joinRoom(inviteCode);
+  $('#skipInviteBtn').onclick = () => forgetRoom();
   $('#joinForm').onsubmit = e => {
     e.preventDefault();
     const code = $('#codeInput').value.trim().toUpperCase();
@@ -158,10 +167,35 @@ function renderLangSeg() {
   for (const btn of $('#langSeg').children) btn.setAttribute('aria-pressed', String(btn.dataset.lang === wordLang));
 }
 
+// The room's own name, or "<host>'s room" until the host gives it one.
+const roomDisplayName = (name, host) => name || (host ? t('defaultRoomName', { name: host }) : '');
+
+// Invite link mode: a focused card for that one room (name + avatar + Join) instead of the full menu.
 function renderInvite() {
   const show = Boolean(inviteCode) && !room;
   $('#inviteBanner').hidden = !show;
-  if (show) $('#inviteText').textContent = t('invited', { code: inviteCode });
+  $('#inviteActions').hidden = !show;
+  $('#mainActions').hidden = show;
+  if (!show) return;
+  const langName = { en: t('langEn'), ar: t('langAr'), both: t('langBoth') };
+  $('#inviteRoom').textContent = inviteInfo ? roomDisplayName(inviteInfo.name, inviteInfo.host) || inviteCode : inviteCode;
+  $('#inviteMeta').textContent = inviteInfo
+    ? `${t('inviteMeta', { lang: langName[inviteInfo.lang] ?? '', n: inviteInfo.players, max: inviteInfo.maxPlayers })} · ${inviteCode}`
+    : '';
+}
+
+async function loadInvite() {
+  renderInvite();
+  try {
+    inviteInfo = await api(`/api/rooms/${inviteCode}`);
+  } catch (err) {
+    if (err.status === 404) {
+      forgetRoom();
+      showError(t('err_notFound'));
+    }
+  }
+  renderInvite();
+  if (!profile.name.trim()) $('#nameInput').focus();
 }
 
 function showError(message) {
@@ -172,8 +206,21 @@ function setBusy(busy) {
   for (const id of ['#playBtn', '#createBtn', '#inviteJoinBtn']) $(id).disabled = busy;
 }
 
+// Everyone picks a nickname before taking a seat.
+function requireName() {
+  const input = $('#nameInput');
+  if (input.value.trim()) return true;
+  showError(t('needName'));
+  input.classList.remove('needs-name');
+  void input.offsetWidth; // restart the shake animation
+  input.classList.add('needs-name');
+  input.focus();
+  return false;
+}
+
 // Quick play or a new private room: the server picks/creates the room and returns its code.
 async function openNewRoom(path, body) {
+  if (!requireName()) return;
   showError('');
   setBusy(true);
   try {
@@ -187,6 +234,7 @@ async function openNewRoom(path, body) {
 }
 
 function joinRoom(code) {
+  if (!requireName()) return;
   if (!ROOM_CODE.test(code)) return showError(t('err_notFound'));
   showError('');
   setBusy(true);
@@ -194,7 +242,7 @@ function joinRoom(code) {
   $('#messages').replaceChildren();
   conn = new RoomConnection(code, {
     // Sent on every (re)connect; the token lets the server give back this player's seat.
-    onOpen: () => send('join', { name: profile.name.trim(), avatar: profile.avatar, token: profile.token }),
+    onOpen: () => send('join', { name: profile.name.trim(), avatar: profile.avatar, token: profile.token, visitor: profile.visitor }),
     onMessage: (type, data) => handlers[type]?.(data),
     onDrop: () => room && toast(t('err_offline')),
   });
@@ -206,6 +254,7 @@ function forgetRoom() {
   store.remove('room', 'sessionStorage');
   history.replaceState(null, '', location.pathname);
   inviteCode = '';
+  inviteInfo = null;
   renderInvite();
 }
 
@@ -233,7 +282,7 @@ function renderRooms() {
     return h('li', { class: 'room-item' },
       h('span', { class: `lang-badge ${r.lang}` }, LANG_BADGE[r.lang] ?? r.lang),
       h('span', { class: 'room-meta' },
-        h('bdi', { class: 'room-host' }, r.host || r.code),
+        h('bdi', { class: 'room-host' }, roomDisplayName(r.name, r.host) || r.code),
         h('small', {}, `${t('playersCount', { n: r.players, max: r.maxPlayers })} · ${status}`)),
       h('button', {
         class: 'btn small green',
@@ -281,6 +330,7 @@ function closeRoom(errorKey) {
   $('#room').hidden = true;
   $('#home').hidden = false;
   forgetRoom();
+  document.title = 'Kharbasha · خربشة';
   showError(errorKey ? t(errorKey) : '');
   startRoomPolling();
 }
@@ -364,7 +414,10 @@ function wordSpans(label) {
 function renderBar(drawer, amDrawer) {
   const st = room.state;
   const playing = st === 'choosing' || st === 'drawing' || st === 'reveal';
+  const title = roomDisplayName(room.settings.name, room.players.find(p => p.id === room.hostId)?.name);
+  $('#roomTitle').textContent = title;
   $('#roundInfo').textContent = playing ? t('round', { r: room.round, t: room.settings.rounds }) : t('roomCode', { code: room.code });
+  document.title = `${title} · Kharbasha`;
 
   const area = $('#wordArea');
   area.replaceChildren();
@@ -450,6 +503,8 @@ function renderLobby() {
     if (document.activeElement !== el) el.value = String(value);
     el.disabled = !host;
   };
+  if (!pendingText.has('#setName')) sync('#setName', s.name);
+  $('#setName').placeholder = roomDisplayName('', room.players.find(p => p.id === room.hostId)?.name);
   sync('#setLang', s.lang);
   sync('#setRounds', s.rounds);
   sync('#setTime', s.drawTime);
@@ -462,7 +517,7 @@ function renderLobby() {
   $('#customOnlyWrap').hidden = !host;
   const custom = $('#setCustom');
   // Never overwrite text the host is typing or hasn't sent yet.
-  if (host && document.activeElement !== custom && !customTimer && typeof room.me.customText === 'string') custom.value = room.me.customText;
+  if (host && document.activeElement !== custom && !pendingText.has('#setCustom') && typeof room.me.customText === 'string') custom.value = room.me.customText;
   $('#customInfo').hidden = host || !room.customCount;
   $('#customInfo').textContent = t('customCount', { n: room.customCount });
   $('#startBtn').hidden = !host;
@@ -500,6 +555,21 @@ function renderReveal() {
     h('span', {}, AVATARS[p.avatar] ?? '🙂'),
     h('bdi', {}, p.name),
     h('b', { dir: 'ltr' }, p.gain ? `+${p.gain}` : '0'))));
+
+  // Continue: the next turn starts as soon as everyone still here has pressed it.
+  const btn = $('#continueBtn');
+  const ready = room.ready ?? [];
+  const waiting = ready.includes(room.me.id);
+  btn.hidden = !reveal.word;
+  btn.disabled = waiting;
+  btn.textContent = waiting
+    ? t('waitingOthers', { n: ready.length, total: room.players.filter(p => p.connected).length })
+    : t('continue');
+  renderRevealStatus();
+}
+
+function renderRevealStatus() {
+  $('#revealStatus').textContent = deadline ? t('nextTurnIn', { s: secondsLeft() }) : '';
 }
 
 function renderGameOver() {
@@ -526,6 +596,7 @@ function tick() {
     sound('tick');
   }
   if (room.state === 'lobby') renderLobbyStatus();
+  if (room.state === 'reveal') renderRevealStatus();
   if (room.state === 'gameover') $('#overStatus').textContent = deadline ? t('backSoon', { s: left }) : '';
 }
 
@@ -546,20 +617,26 @@ function initLobby() {
   $('#setHints').onchange = e => update({ hints: Number(e.target.value) });
   $('#setPublic').onchange = e => update({ isPublic: e.target.checked });
   $('#setCustomOnly').onchange = e => update({ customOnly: e.target.checked });
-  // Custom words are sent shortly after typing stops, or at once when the box loses focus.
-  const flushCustom = () => {
-    if (!customTimer) return;
-    clearTimeout(customTimer);
-    customTimer = null;
-    update({ customText: $('#setCustom').value });
+  // Text fields are sent shortly after typing stops, or at once when they lose focus.
+  const bindText = (sel, key) => {
+    const el = $(sel);
+    const flush = () => {
+      if (!pendingText.has(sel)) return;
+      clearTimeout(pendingText.get(sel));
+      pendingText.delete(sel);
+      update({ [key]: el.value });
+    };
+    el.addEventListener('input', () => {
+      clearTimeout(pendingText.get(sel));
+      pendingText.set(sel, setTimeout(flush, 500));
+    });
+    el.addEventListener('blur', flush);
   };
-  $('#setCustom').addEventListener('input', () => {
-    clearTimeout(customTimer);
-    customTimer = setTimeout(flushCustom, 500);
-  });
-  $('#setCustom').addEventListener('blur', flushCustom);
+  bindText('#setName', 'name');
+  bindText('#setCustom', 'customText');
   $('#startBtn').onclick = () => send('start');
   $('#againBtn').onclick = () => send('start');
+  $('#continueBtn').onclick = () => send('ready');
 }
 
 function initToolbar() {
@@ -723,5 +800,10 @@ setInterval(tick, 250);
 new ResizeObserver(fitBoard).observe($('#stage'));
 new ResizeObserver(fitBoard).observe($('#toolbar'));
 
-// Coming back to a room this tab was already in (e.g. after a refresh): rejoin straight away.
-if (inviteCode && store.get('room', null, 'sessionStorage') === inviteCode) joinRoom(inviteCode);
+// Coming back to a room this tab was already in (e.g. after a refresh) rejoins straight away;
+// a fresh invite link shows the invite card first so the player can pick a name.
+if (inviteCode && store.get('room', null, 'sessionStorage') === inviteCode && profile.name.trim()) joinRoom(inviteCode);
+else if (inviteCode) loadInvite();
+
+api('/api/track', { visitor: profile.visitor, uiLang: getLang(), referrer: document.referrer, invited: Boolean(inviteCode) })
+  .catch(() => { /* statistics are best-effort */ });

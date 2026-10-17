@@ -151,6 +151,22 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
   font-weight: 800;
   text-align: center;
 }
+.invite-room { font-size: 1.35rem; line-height: 1.25; overflow-wrap: anywhere; }
+.invite-banner small { font-weight: 600; color: var(--ink-soft); }
+.actions { display: flex; flex-direction: column; gap: 14px; }
+.link-btn {
+  align-self: center;
+  min-height: 40px;
+  padding: 4px 8px;
+  border: 0;
+  background: none;
+  color: var(--ink-soft);
+  font-weight: 700;
+  text-decoration: underline;
+}
+.needs-name { border-color: var(--red); animation: shake .4s; }
+@keyframes shake { 25% { transform: translateX(-6px); } 50% { transform: translateX(6px); } 75% { transform: translateX(-3px); } }
+.privacy { margin: 0; padding: 0 4px; color: rgb(255 255 255 / .75); font-size: .85rem; text-align: center; }
 .avatar-picker { display: flex; align-items: center; justify-content: center; gap: 16px; }
 .avatar { display: inline-grid; place-items: center; line-height: 1; }
 .avatar.big {
@@ -281,7 +297,9 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
 }
 .timer.urgent { background: var(--red); color: #fff; animation: pulse 1s infinite; }
 @keyframes pulse { 50% { transform: scale(1.08); } }
-.round-info { flex: none; font-weight: 800; color: var(--ink-soft); }
+.room-title { flex: none; min-width: 0; max-width: 34%; display: flex; flex-direction: column; line-height: 1.2; }
+.room-name { font-weight: 800; font-size: 1.05rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.round-info { font-weight: 700; font-size: .9rem; color: var(--ink-soft); }
 .word-area {
   flex: 1;
   min-width: 0;
@@ -471,6 +489,8 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
 }
 .gains bdi, .podium bdi { flex: 1; min-width: 0; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gains li.plus b { color: var(--green); }
+.continue-btn { width: 100%; margin-top: 12px; }
+.reveal-status { margin: 6px 0 0; font-weight: 600; }
 .podium { margin-bottom: 14px; }
 .podium li.top1 { background: #fff3c4; font-size: 1.2rem; }
 .podium .medal { min-width: 1.8em; font-weight: 800; text-align: center; }
@@ -582,7 +602,7 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
   .board-wrap { width: min(100%, calc((100dvh - var(--topbar-h) - 500px) * 4 / 3)); }
   .players { max-height: none; }
   .roombar { flex-wrap: wrap; row-gap: 6px; }
-  .round-info { flex: 1; }
+  .room-title { flex: 1; max-width: none; }
   .word-area { order: 3; flex-basis: 100%; }
 }
 
@@ -615,7 +635,7 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
   }
   .roombar { flex-wrap: wrap; gap: 6px 10px; min-height: 0; padding: 6px 10px; }
   .timer { width: 44px; height: 44px; font-size: 1.1rem; }
-  .round-info { flex: 1; font-size: .95rem; }
+  .room-title { flex: 1; max-width: none; }
   .word-area { order: 3; flex-basis: 100%; }
   .mask { gap: 4px; font-size: 1.3rem; }
   .word-full { font-size: 1.3rem; }

@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { Room, cleanProfile } from './core/room.js';
 import { randomId } from './core/random.js';
+import { recordRoomEvent } from './analytics/record.js';
 
 const SAVE_DELAY_MS = 1_000;
 const HEARTBEAT_MS = 5 * 60_000; // keeps the lobby's listing fresh; also cleans up rooms nobody joined
@@ -26,6 +27,7 @@ export class RoomObject extends DurableObject {
       send: (connId, event, data) => this.sendTo(connId, event, data),
       close: (connId, reason) => this.closeConnection(connId, reason),
       changed: () => this.scheduleSave(),
+      track: (event, data) => this.ctx.waitUntil?.(recordRoomEvent(env.DB, this.room.code, event, data)),
     };
     // Keep-alive pings are answered by the runtime without waking the room.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
@@ -51,11 +53,11 @@ export class RoomObject extends DurableObject {
 
   // ------------------------------------------------------------ WebSockets
 
-  async fetch() {
+  async fetch(request) {
     const { 0: client, 1: server } = new WebSocketPair();
     const connId = randomId();
     this.ctx.acceptWebSocket(server, [connId]);
-    server.serializeAttachment({ connId });
+    server.serializeAttachment({ connId, client: readClient(request) });
     if (!this.room) this.closeConnection(connId, 'notFound');
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -68,14 +70,14 @@ export class RoomObject extends DurableObject {
     } catch {
       return;
     }
-    const { connId, pid } = ws.deserializeAttachment() ?? {};
+    const { connId, pid, client } = ws.deserializeAttachment() ?? {};
     if (!this.allow(connId, msg.t)) return;
 
     if (msg.t === 'join') {
-      const result = this.room.join(connId, cleanProfile(msg.d));
+      const result = this.room.join(connId, cleanProfile(msg.d), client);
       if (result.error) return this.closeConnection(connId, result.error);
       this.hadPlayers = true;
-      ws.serializeAttachment({ connId, pid: result.playerId });
+      ws.serializeAttachment({ connId, client, pid: result.playerId });
       return;
     }
 
@@ -104,6 +106,9 @@ export class RoomObject extends DurableObject {
         break;
       case 'kick':
         room.kick(player, msg.d);
+        break;
+      case 'ready':
+        room.markReady(player);
         break;
     }
   }
@@ -222,5 +227,15 @@ export class RoomObject extends DurableObject {
 
   lobby() {
     return this.env.LOBBY.get(this.env.LOBBY.idFromName('lobby'));
+  }
+}
+
+// Country and device of the connecting player, added by the Worker (see connectToRoom).
+function readClient(request) {
+  try {
+    const { country, device, os, browser, bot } = JSON.parse(request.headers.get('X-Client') ?? '{}');
+    return { country, device, os, browser, bot: bot === true };
+  } catch {
+    return {};
   }
 }

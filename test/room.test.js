@@ -6,23 +6,25 @@ import { Room, cleanProfile } from '../src/core/room.js';
 function setup(t, options = { lang: 'ar' }) {
   const inbox = new Map();
   const closed = new Map();
+  const tracked = [];
   const transport = {
     send: (connId, event, data) => inbox.get(connId)?.push({ event, data: structuredClone(data) }),
     close: (connId, reason) => closed.set(connId, reason),
     changed: () => {},
+    track: (event, data) => tracked.push({ event, ...data }),
   };
   const room = new Room('ABCDE', options, transport);
   t.after(() => room.destroy());
 
   let connCount = 0;
-  const connect = (name, token = `${name}-token`.padEnd(20, 'x')) => {
+  const connect = (name, token = `${name}-token`.padEnd(20, 'x'), client = {}) => {
     const connId = `conn${++connCount}`;
     inbox.set(connId, []);
-    const result = room.join(connId, cleanProfile({ name, avatar: 1, token }));
+    const result = room.join(connId, cleanProfile({ name, avatar: 1, token, visitor: `visitor-${name}` }), client);
     const all = event => inbox.get(connId).filter(m => m.event === event).map(m => m.data);
     return { connId, result, all, last: event => all(event).at(-1), player: () => room.players.get(result.playerId) };
   };
-  return { room, connect, closed };
+  return { room, connect, closed, tracked };
 }
 
 // Starts a game and returns [drawer, guesser] client handles.
@@ -171,6 +173,61 @@ test('a room restored from storage keeps players, scores and settings', t => {
   assert.equal(restored.players.get(b.result.playerId).connected, false);
   t.mock.timers.tick(20_000);
   assert.equal(restored.players.has(b.result.playerId), false);
+});
+
+test('Continue moves on once everyone still here is ready', t => {
+  const { room, connect } = setup(t, { lang: 'en' });
+  const clients = [connect('A'), connect('B'), connect('C')];
+  const [drawer, ...guessers] = startGame(room, clients);
+  room.chooseWord(drawer.player(), 0);
+  room.endTurn('timeUp');
+  assert.equal(room.state, 'reveal');
+
+  room.markReady(drawer.player());
+  room.markReady(guessers[0].player());
+  assert.equal(room.state, 'reveal', 'still waiting for one player');
+  assert.deepEqual(guessers[1].last('room:state').ready.length, 2);
+
+  // The last one leaving counts too: nobody is left to wait for.
+  room.disconnect(guessers[1].player());
+  assert.equal(room.state, 'choosing', 'next turn started without waiting for the timer');
+});
+
+test('the host can name the room, and the name is cleaned and listed', t => {
+  const { room, connect } = setup(t, { lang: 'en', isPublic: true });
+  const host = connect('Host');
+  const guest = connect('Guest');
+  room.updateSettings(guest.player(), { name: 'Hijacked' });
+  assert.equal(room.settings.name, '', 'only the host renames');
+  room.updateSettings(host.player(), { name: '  ‮Friday   night  sketches with the whole family!  ' });
+  assert.equal(room.settings.name, 'Friday night sketches with the');
+  assert.equal(room.summary().name, room.settings.name);
+  assert.equal(guest.last('room:state').settings.name, room.settings.name);
+});
+
+test('the room announces joins, games and turns for statistics', t => {
+  const { room, connect, tracked } = setup(t, { lang: 'both' });
+  connect('Sara', undefined, { country: 'AE', device: 'mobile' });
+  connect('Omar');
+  connect('Sara'); // reconnect with the same token: not a new join
+  assert.deepEqual(tracked.filter(e => e.event === 'player_joined').map(e => [e.name, e.visitor, e.country]), [
+    ['Sara', 'visitor-Sara', 'AE'],
+    ['Omar', 'visitor-Omar', undefined],
+  ]);
+
+  const drawer = [...room.players.values()].find(p => p.id === (startGame(room, []), room.drawerId));
+  const started = tracked.find(e => e.event === 'game_started');
+  assert.equal(started.players, 2);
+  room.chooseWord(drawer, 0);
+  t.mock.timers.tick(80_000);
+  const turn = tracked.find(e => e.event === 'turn_ended');
+  assert.equal(turn.gameId, started.gameId);
+  assert.equal(turn.reason, 'timeUp');
+  assert.ok(turn.wordEn && turn.wordAr, 'both languages recorded in a Both room');
+
+  room.remove(drawer.id, 'left'); // only one player left: game abandoned
+  const ended = tracked.find(e => e.event === 'game_ended');
+  assert.deepEqual([ended.gameId, ended.completed, ended.winner], [started.gameId, false, null]);
 });
 
 test('client profiles are cleaned', () => {
