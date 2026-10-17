@@ -292,7 +292,18 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
   gap: 4px 24px;
   text-align: center;
 }
-.mask { display: flex; align-items: flex-end; gap: 6px; font-size: 1.6rem; font-weight: 800; }
+.mask {
+  max-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 6px;
+  font-size: 1.6rem;
+  font-weight: 800;
+}
+.mask.mid { gap: 4px; font-size: 1.35rem; }
+.mask.long { gap: 3px; font-size: 1.1rem; }
 .slot {
   display: inline-block;
   min-width: .85em;
@@ -542,6 +553,7 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
   box-shadow: var(--shadow);
   font-weight: 800;
   text-align: center;
+  pointer-events: none; /* informational only: never block the drawing tools underneath */
 }
 
 /* ================================================================ tablet landscape: chat & players share a side column */
@@ -569,6 +581,9 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f0f6; color:
   .stage { --fit: 0; }
   .board-wrap { width: min(100%, calc((100dvh - var(--topbar-h) - 500px) * 4 / 3)); }
   .players { max-height: none; }
+  .roombar { flex-wrap: wrap; row-gap: 6px; }
+  .round-info { flex: 1; }
+  .word-area { order: 3; flex-basis: 100%; }
 }
 
 /* short landscape screens (small laptops, phones on their side): let the page scroll */

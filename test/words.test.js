@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { answerKeys, isClose, toKey } from '../server/normalize.js';
-import { ENTRIES, parseCustomWords, pickEntries } from '../server/words.js';
+import { answerKeys, isClose, toKey } from '../src/core/normalize.js';
+import { ENTRIES, parseCustomWords, pickEntries } from '../src/core/words.js';
 
 test('Arabic spelling variants all match the answer', () => {
   const answers = answerKeys({ ar: ['قطة', 'قط'] }, ['ar']);

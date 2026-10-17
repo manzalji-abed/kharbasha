@@ -1,5 +1,7 @@
-import { randomInt } from 'node:crypto';
+import { randomInt } from './random.js';
 import { WORD_PAIRS } from './wordlist.js';
+
+export const LANGS = ['en', 'ar', 'both'];
 
 const ARABIC = /[؀-ۿ]/;
 const split = s => s.split('|').map(x => x.trim()).filter(Boolean);

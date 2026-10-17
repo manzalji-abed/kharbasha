@@ -1,5 +1,6 @@
 import { Board } from './board.js';
 import { getLang, setLang, t } from './i18n.js';
+import { RoomConnection, api } from './net.js';
 
 const AVATARS = ['🐱', '🐶', '🦊', '🐼', '🐨', '🐯', '🦁', '🐸', '🐵', '🐰', '🐻', '🐷', '🐮', '🐔', '🐧', '🦉', '🐙', '🦄', '🐲', '🐢', '🐝', '🦋', '🐳', '🐪'];
 const COLORS = [
@@ -8,6 +9,8 @@ const COLORS = [
 ];
 const SIZES = [3, 6, 12, 22, 40];
 const LANG_BADGE = { en: 'EN', ar: 'ع', both: 'EN+ع' };
+const ROOM_CODE = /^[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{5}$/;
+const JOIN_TIMEOUT_MS = 10_000;
 const TOKEN_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 const TUNES = {
   correct: [[660, 0], [880, 0.09]],
@@ -75,7 +78,8 @@ let muted = store.get('muted', false) === true;
 let inviteCode = (new URLSearchParams(location.search).get('r') ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
 
 let room = null; // latest room:state from the server
-let wantRoom = false; // ignore stray state updates after leaving
+let conn = null; // RoomConnection while in (or joining) a room
+let joinTimer = null;
 let deadline = 0;
 let prevState = null;
 let lastTick = 0;
@@ -85,30 +89,23 @@ let toastTimer = null;
 let customTimer = null;
 let audio = null;
 
-const socket = io();
-const board = new Board($('#board'), op => socket.emit('draw', op));
+const send = (type, data) => conn?.send(type, data);
+const board = new Board($('#board'), op => send('draw', op));
 
-const payload = extra => ({ name: profile.name.trim(), avatar: profile.avatar, token: profile.token, ...extra });
 const secondsLeft = () => (deadline ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) : 0);
 const me = () => room.players.find(p => p.id === room.me.id);
 const isHost = () => room.me.id === room.hostId;
 const dirOf = lang => (lang === 'ar' ? 'rtl' : 'ltr');
 
-// ---------------------------------------------------------------- socket events
+// ---------------------------------------------------------------- messages from the room
 
-socket.on('connect', () => {
-  if (wantRoom && room) {
-    socket.emit('room:join', payload({ code: room.code }), res => res?.error && closeRoom(`err_${res.error}`));
-  } else if (!room) {
-    refreshRooms();
-  }
-});
-socket.on('disconnect', () => room && toast(t('err_offline')));
-socket.on('room:state', onState);
-socket.on('room:closed', ({ reason } = {}) => closeRoom(`err_${reason}`));
-socket.on('chat', addChat);
-socket.on('draw', op => board.apply(op));
-socket.on('draw:history', ops => Array.isArray(ops) && board.load(ops));
+const handlers = {
+  'room:state': onState,
+  'room:closed': ({ reason } = {}) => closeRoom(`err_${reason}`),
+  chat: m => addChat(m),
+  draw: op => board.apply(op),
+  'draw:history': ops => Array.isArray(ops) && board.load(ops),
+};
 
 // ---------------------------------------------------------------- home screen
 
@@ -129,13 +126,13 @@ function initHome() {
       renderLangSeg();
     };
   }
-  $('#playBtn').onclick = () => enter('room:quick', { lang: wordLang });
-  $('#createBtn').onclick = () => enter('room:create', { lang: wordLang, isPublic: false });
-  $('#inviteJoinBtn').onclick = () => enter('room:join', { code: inviteCode });
+  $('#playBtn').onclick = () => openNewRoom('/api/quick', { lang: wordLang });
+  $('#createBtn').onclick = () => openNewRoom('/api/rooms', { lang: wordLang, isPublic: false });
+  $('#inviteJoinBtn').onclick = () => joinRoom(inviteCode);
   $('#joinForm').onsubmit = e => {
     e.preventDefault();
     const code = $('#codeInput').value.trim().toUpperCase();
-    if (code) enter('room:join', { code });
+    if (code) joinRoom(code);
   };
   $('#logo').onclick = e => {
     if (!room) return;
@@ -175,18 +172,34 @@ function setBusy(busy) {
   for (const id of ['#playBtn', '#createBtn', '#inviteJoinBtn']) $(id).disabled = busy;
 }
 
-function enter(event, extra) {
+// Quick play or a new private room: the server picks/creates the room and returns its code.
+async function openNewRoom(path, body) {
   showError('');
   setBusy(true);
-  wantRoom = true;
-  $('#messages').replaceChildren();
-  socket.timeout(10_000).emit(event, payload(extra), (err, res) => {
+  try {
+    const { code, error } = await api(path, body);
+    if (error) throw Object.assign(new Error(error), { key: error });
+    joinRoom(code);
+  } catch (err) {
     setBusy(false);
-    if (!err && !res?.error) return;
-    wantRoom = false;
-    showError(t(err ? 'err_offline' : `err_${res.error}`));
-    if (extra?.code && extra.code === inviteCode) forgetRoom();
+    showError(t(`err_${err.key ?? 'generic'}`));
+  }
+}
+
+function joinRoom(code) {
+  if (!ROOM_CODE.test(code)) return showError(t('err_notFound'));
+  showError('');
+  setBusy(true);
+  conn?.close();
+  $('#messages').replaceChildren();
+  conn = new RoomConnection(code, {
+    // Sent on every (re)connect; the token lets the server give back this player's seat.
+    onOpen: () => send('join', { name: profile.name.trim(), avatar: profile.avatar, token: profile.token }),
+    onMessage: (type, data) => handlers[type]?.(data),
+    onDrop: () => room && toast(t('err_offline')),
   });
+  clearTimeout(joinTimer);
+  joinTimer = setTimeout(() => !room && closeRoom('err_generic'), JOIN_TIMEOUT_MS);
 }
 
 function forgetRoom() {
@@ -203,11 +216,13 @@ function startRoomPolling() {
 }
 
 function refreshRooms() {
-  if (!socket.connected || room) return;
-  socket.emit('rooms:list', null, rooms => {
-    lastRooms = Array.isArray(rooms) ? rooms : [];
-    renderRooms();
-  });
+  if (room || document.hidden) return;
+  api('/api/rooms')
+    .then(rooms => {
+      lastRooms = Array.isArray(rooms) ? rooms : [];
+      renderRooms();
+    })
+    .catch(() => { /* keep showing the last list */ });
 }
 
 function renderRooms() {
@@ -223,7 +238,7 @@ function renderRooms() {
       h('button', {
         class: 'btn small green',
         disabled: r.players >= r.maxPlayers,
-        onclick: () => enter('room:join', { code: r.code }),
+        onclick: () => joinRoom(r.code),
       }, t('join')));
   }));
 }
@@ -231,7 +246,7 @@ function renderRooms() {
 // ---------------------------------------------------------------- entering / leaving a room
 
 function onState(state) {
-  if (!wantRoom) return;
+  if (!conn) return;
   const opening = !room;
   room = state;
   deadline = state.timeLeft ? Date.now() + state.timeLeft : 0;
@@ -241,6 +256,8 @@ function onState(state) {
 
 function openRoom() {
   clearInterval(roomPoll);
+  clearTimeout(joinTimer);
+  setBusy(false);
   $('#home').hidden = true;
   $('#room').hidden = false;
   store.set('room', room.code, 'sessionStorage');
@@ -250,8 +267,11 @@ function openRoom() {
 }
 
 function closeRoom(errorKey) {
-  if (room) socket.emit('room:leave');
-  wantRoom = false;
+  if (room) send('leave');
+  conn?.close();
+  conn = null;
+  clearTimeout(joinTimer);
+  setBusy(false);
   room = null;
   deadline = 0;
   prevState = null;
@@ -360,7 +380,8 @@ function renderBar(drawer, amDrawer) {
 
 function maskEl(mask) {
   const letters = mask.chars.filter(c => c === null || /[\p{L}\p{N}]/u.test(c)).length;
-  return h('div', { class: 'mask', lang: mask.lang, dir: dirOf(mask.lang), 'aria-label': t('letters', { n: letters }) },
+  const size = mask.chars.length > 12 ? ' long' : mask.chars.length > 8 ? ' mid' : '';
+  return h('div', { class: `mask${size}`, lang: mask.lang, dir: dirOf(mask.lang), 'aria-label': t('letters', { n: letters }) },
     ...mask.chars.map(c => (c === ' ' ? h('span', { class: 'gap' }) : h('span', { class: c === null ? 'slot' : 'slot shown' }, c ?? ''))),
     h('sup', { class: 'count' }, String(letters)));
 }
@@ -389,7 +410,7 @@ function renderPlayers() {
             class: 'kick',
             title: t('kick'),
             'aria-label': t('kick'),
-            onclick: () => confirm(t('kickConfirm', { name: p.name })) && socket.emit('player:kick', p.id),
+            onclick: () => confirm(t('kickConfirm', { name: p.name })) && send('kick', p.id),
           }, '✕')
           : null));
   }));
@@ -440,7 +461,8 @@ function renderLobby() {
   $('#customWrap').hidden = !host;
   $('#customOnlyWrap').hidden = !host;
   const custom = $('#setCustom');
-  if (host && document.activeElement !== custom && typeof room.me.customText === 'string') custom.value = room.me.customText;
+  // Never overwrite text the host is typing or hasn't sent yet.
+  if (host && document.activeElement !== custom && !customTimer && typeof room.me.customText === 'string') custom.value = room.me.customText;
   $('#customInfo').hidden = host || !room.customCount;
   $('#customInfo').textContent = t('customCount', { n: room.customCount });
   $('#startBtn').hidden = !host;
@@ -465,7 +487,7 @@ function renderChoose(drawer, amDrawer) {
     return;
   }
   box.replaceChildren(...room.me.options.map((label, i) =>
-    h('button', { class: 'btn choice', onclick: () => socket.emit('word:choose', i) }, ...wordSpans(label))));
+    h('button', { class: 'btn choice', onclick: () => send('choose', i) }, ...wordSpans(label))));
 }
 
 function renderReveal() {
@@ -516,20 +538,28 @@ function initLobby() {
   fill('#setMax', Array.from({ length: 15 }, (_, i) => i + 2));
   fill('#setHints', [0, 1, 2, 3]);
 
-  const send = patch => socket.emit('room:settings', patch);
-  $('#setLang').onchange = e => send({ lang: e.target.value });
-  $('#setRounds').onchange = e => send({ rounds: Number(e.target.value) });
-  $('#setTime').onchange = e => send({ drawTime: Number(e.target.value) });
-  $('#setMax').onchange = e => send({ maxPlayers: Number(e.target.value) });
-  $('#setHints').onchange = e => send({ hints: Number(e.target.value) });
-  $('#setPublic').onchange = e => send({ isPublic: e.target.checked });
-  $('#setCustomOnly').onchange = e => send({ customOnly: e.target.checked });
-  $('#setCustom').addEventListener('input', e => {
+  const update = patch => send('settings', patch);
+  $('#setLang').onchange = e => update({ lang: e.target.value });
+  $('#setRounds').onchange = e => update({ rounds: Number(e.target.value) });
+  $('#setTime').onchange = e => update({ drawTime: Number(e.target.value) });
+  $('#setMax').onchange = e => update({ maxPlayers: Number(e.target.value) });
+  $('#setHints').onchange = e => update({ hints: Number(e.target.value) });
+  $('#setPublic').onchange = e => update({ isPublic: e.target.checked });
+  $('#setCustomOnly').onchange = e => update({ customOnly: e.target.checked });
+  // Custom words are sent shortly after typing stops, or at once when the box loses focus.
+  const flushCustom = () => {
+    if (!customTimer) return;
     clearTimeout(customTimer);
-    customTimer = setTimeout(() => send({ customText: e.target.value }), 500);
+    customTimer = null;
+    update({ customText: $('#setCustom').value });
+  };
+  $('#setCustom').addEventListener('input', () => {
+    clearTimeout(customTimer);
+    customTimer = setTimeout(flushCustom, 500);
   });
-  $('#startBtn').onclick = () => socket.emit('game:start');
-  $('#againBtn').onclick = () => socket.emit('game:start');
+  $('#setCustom').addEventListener('blur', flushCustom);
+  $('#startBtn').onclick = () => send('start');
+  $('#againBtn').onclick = () => send('start');
 }
 
 function initToolbar() {
@@ -585,7 +615,7 @@ function initChat() {
     e.preventDefault();
     const input = $('#chatInput');
     const text = input.value.trim();
-    if (text) socket.emit('chat', text);
+    if (text) send('chat', text);
     input.value = '';
   };
 }
@@ -694,4 +724,4 @@ new ResizeObserver(fitBoard).observe($('#stage'));
 new ResizeObserver(fitBoard).observe($('#toolbar'));
 
 // Coming back to a room this tab was already in (e.g. after a refresh): rejoin straight away.
-if (inviteCode && store.get('room', null, 'sessionStorage') === inviteCode) enter('room:join', { code: inviteCode });
+if (inviteCode && store.get('room', null, 'sessionStorage') === inviteCode) joinRoom(inviteCode);

@@ -87,6 +87,7 @@ const DICT = {
     err_elsewhere: 'You opened this room in another tab.',
     err_slowDown: 'Too many rooms created — try again in a minute.',
     err_offline: 'Connection lost — reconnecting…',
+    err_generic: 'Couldn’t reach the game — check your connection and try again.',
   },
   ar: {
     appName: 'خربشة',
@@ -174,6 +175,7 @@ const DICT = {
     err_elsewhere: 'فتحت هذه الغرفة في تبويب آخر.',
     err_slowDown: 'أنشأت غرفاً كثيرة — حاول بعد دقيقة.',
     err_offline: 'انقطع الاتصال — جارٍ إعادة الاتصال…',
+    err_generic: 'تعذّر الوصول إلى اللعبة — تحقق من الاتصال وحاول مجدداً.',
   },
 };
 
