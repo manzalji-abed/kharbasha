@@ -49,6 +49,17 @@ Cloudflare's relay ($0.05 per GB actually relayed; voice is roughly 20–30 MB p
 
 No redeploy is needed: the Worker picks the relay up as soon as the secrets exist.
 
+## Search engines and link previews
+
+- `public/robots.txt` and `public/sitemap.xml` (submit the sitemap in Google Search Console; a "Domain" property for
+  `abedmanzalji.com` covers this subdomain).
+- `public/index.html` carries the title, description, canonical URL (invite links `?r=CODE` count as the home page),
+  `hreflang` links between `/` and `/ar`, Open Graph / Twitter tags with `public/og-image.jpg` (1200×630, what
+  WhatsApp and others show), and `WebApplication` structured data.
+- `/ar` is the Arabic home page: the Worker serves the same page with Arabic language, titles and preview text
+  (`src/seo.js`), and the app opens in Arabic there.
+- `/admin` is marked `noindex`.
+
 ## Analytics
 
 <https://kharbasha.abedmanzalji.com/admin> (password: the `ADMIN_PASSWORD` secret, change it with

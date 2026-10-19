@@ -3,6 +3,7 @@ import { RoomObject } from './room-object.js';
 import { handleAdmin } from './analytics/admin.js';
 import { clientInfo } from './analytics/client.js';
 import { recordRoomOpened, recordVisit } from './analytics/record.js';
+import { arabicHome } from './seo.js';
 
 export { LobbyObject, RoomObject };
 
@@ -15,6 +16,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/ws/')) return connectToRoom(request, env, url);
+    if (request.method === 'GET' && (url.pathname === '/ar' || url.pathname === '/ar/')) return arabicHome(request, env);
 
     const lobby = env.LOBBY.get(env.LOBBY.idFromName('lobby'));
     if (url.pathname.startsWith('/api/admin/')) return handleAdmin(request, env, url, lobby);

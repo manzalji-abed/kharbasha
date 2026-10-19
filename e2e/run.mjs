@@ -160,6 +160,32 @@ async function playQuickTurn(players, next) {
 
 console.log(`Kharbasha end-to-end test · ${BASE} · run ${RUN}\n`);
 
+await step('search and sharing: robots, sitemap, link previews, Arabic page', async () => {
+  const get = async (path, headers = {}) => {
+    const res = await fetch(BASE + path, { headers });
+    return { res, text: await res.text() };
+  };
+  const meta = (html, key) => html.match(new RegExp(`<meta (?:property|name)="${key}" content="([^"]*)"`))?.[1];
+  const robots = await get('/robots.txt');
+  check(robots.res.ok && /Sitemap: https:\/\/kharbasha\.abedmanzalji\.com\/sitemap\.xml/.test(robots.text) && /Disallow: \/api\//.test(robots.text), 'robots.txt');
+  const sitemap = await get('/sitemap.xml');
+  check(sitemap.res.ok && (sitemap.text.match(/<loc>/g) ?? []).length === 2, 'sitemap.xml lists / and /ar');
+  // Link-preview crawlers (WhatsApp, Telegram…) read the HTML without running scripts.
+  const home = await get('/?r=ABCDE', { 'User-Agent': 'WhatsApp/2.24.1 A' });
+  check(/<link rel="canonical" href="https:\/\/kharbasha\.abedmanzalji\.com\/">/.test(home.text), 'invite links point search engines at the home page');
+  check(meta(home.text, 'og:image') === 'https://kharbasha.abedmanzalji.com/og-image.jpg', 'share image tag');
+  check(meta(home.text, 'og:title')?.includes('Kharbasha') && meta(home.text, 'twitter:card') === 'summary_large_image', 'share title and card');
+  const ld = JSON.parse(home.text.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)[1]);
+  check(ld['@type'] === 'WebApplication' && ld.inLanguage.includes('ar'), 'structured data parses');
+  const image = await fetch(`${BASE}/og-image.jpg`);
+  const bytes = (await image.arrayBuffer()).byteLength;
+  check(image.ok && image.headers.get('content-type') === 'image/jpeg' && bytes < 300_000, `share image is a small JPEG (${bytes} bytes)`);
+  const ar = await get('/ar');
+  check(/<html[^>]*lang="ar"[^>]*dir="rtl"/.test(ar.text), '/ar is an Arabic page');
+  check(/<title>خربشة/.test(ar.text) && meta(ar.text, 'description')?.startsWith('لعبة رسم وتخمين'), 'Arabic title and description');
+  check(/<link rel="canonical" href="https:\/\/kharbasha\.abedmanzalji\.com\/ar">/.test(ar.text) && meta(ar.text, 'og:locale') === 'ar_AR', 'Arabic canonical and preview locale');
+});
+
 const host = await open('host', 'desktop', 'en');
 const guest = await open('guest', 'tablet', 'en');
 const phone = await open('phone', 'phone', 'ar');
@@ -370,6 +396,14 @@ await step('the remaining turns play through to the final scores', async () => {
   for (const p of players) await shot(p, `10-gameover-${p.label}`);
   const podium = await host.$$eval('#podium li', els => els.length);
   check(podium === 3, 'three players on the final ranking');
+});
+
+await step('the Arabic page (/ar) opens the game in Arabic', async () => {
+  const visitor = await open('arabic-visitor', 'phone', 'en'); // saved English choice: /ar still wins
+  await visitor.goto(`${BASE}/ar`, { waitUntil: 'networkidle0' });
+  check((await visitor.$eval('html', el => el.dir)) === 'rtl', 'right-to-left');
+  check((await text(visitor, '#playBtn')) === 'العب الآن', 'Arabic Play button');
+  await shot(visitor, '00-arabic-home');
 });
 
 const q1 = await open('quick1', 'desktop', 'en');
