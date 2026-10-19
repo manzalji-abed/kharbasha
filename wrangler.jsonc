@@ -3,8 +3,8 @@
   "name": "kharbasha",
   "main": "src/worker.js",
   "compatibility_date": "2026-09-01",
-  // The game's web page, scripts and icons.
-  "assets": { "directory": "./public" },
+  // The game's web page, scripts and icons. The binding lets the Worker build /ar from the home page.
+  "assets": { "directory": "./public", "binding": "ASSETS" },
   "durable_objects": {
     "bindings": [
       { "name": "ROOMS", "class_name": "RoomObject" },

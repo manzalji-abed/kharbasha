@@ -78,7 +78,11 @@ const profile = {
 store.set('token', profile.token, 'sessionStorage');
 store.set('visitor', profile.visitor);
 
-const initialUiLang = store.get('uiLang', null) ?? (navigator.language?.toLowerCase().startsWith('ar') ? 'ar' : 'en');
+// /ar is served with data-lang="ar" and always opens in Arabic; elsewhere the saved choice or the browser's language.
+const initialUiLang = document.documentElement.dataset.lang
+  ?? store.get('uiLang', null)
+  ?? (navigator.language?.toLowerCase().startsWith('ar') ? 'ar' : 'en');
+const HOME_TITLE = document.title;
 let wordLang = ['en', 'ar', 'both'].includes(store.get('wordLang', null)) ? store.get('wordLang', null) : initialUiLang;
 let muted = store.get('muted', false) === true;
 let inviteCode = (new URLSearchParams(location.search).get('r') ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
@@ -335,7 +339,7 @@ function closeRoom(errorKey) {
   $('#room').hidden = true;
   $('#home').hidden = false;
   forgetRoom();
-  document.title = 'Kharbasha · خربشة';
+  document.title = HOME_TITLE;
   showError(errorKey ? t(errorKey) : '');
   startRoomPolling();
 }
